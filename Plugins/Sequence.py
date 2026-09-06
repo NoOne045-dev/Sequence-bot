@@ -8,7 +8,7 @@ from pyrogram.enums import ParseMode
 from datetime import datetime
 
 from config import *
-from Plugins.callbacks import MODES  # ← Import MODES from callbacks.py (recommended)
+from Plugins.callbacks import MODES, get_mode_keyboard  # ← shared with callbacks.py (recommended)
 from Database.database import Seishiro
 from Plugins.start import *
 
@@ -241,13 +241,7 @@ async def mode_cmd(client: Client, message: Message):
         current = await Seishiro.get_sequence_mode(user_id) or "All"
         current_name = MODES.get(current, MODES["All"])["button"]
 
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"Qᴜᴀʟɪᴛʏ{' ✅' if current == 'Quality' else ''}", callback_data="mode_Quality"),
-             InlineKeyboardButton(f"Aʟʟ (S→E→Q){' ✅' if current == 'All' else ''}", callback_data="mode_All")],
-            [InlineKeyboardButton(f"Aʟʟ [S→Q→E]{' ✅' if current == 'AllSQE' else ''}", callback_data="mode_AllSQE"),
-             InlineKeyboardButton(f"Eᴘɪsᴏᴅᴇ{' ✅' if current == 'Episode' else ''}", callback_data="mode_Episode")],
-            [InlineKeyboardButton(f"Sᴇᴀsᴏɴ{' ✅' if current == 'Season' else ''}", callback_data="mode_Season")]
-        ])
+        kb = get_mode_keyboard(current)
 
         await handle_floodwait(
             message.reply_text,
