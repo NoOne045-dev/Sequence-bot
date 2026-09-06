@@ -3,8 +3,12 @@ from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardBu
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
 import asyncio
+import logging
 
+from config import *
 from Database.database import Seishiro
+
+logger = logging.getLogger(__name__)
 # If you need user_sessions: uncomment and adjust path
 # from Plugins.sequence import user_sessions
 
@@ -60,6 +64,8 @@ def get_mode_keyboard(current_mode: str) -> InlineKeyboardMarkup:
 
     if row:
         buttons.append(row)
+
+    buttons.append([InlineKeyboardButton("Close ✖️", callback_data="close")])
 
     return InlineKeyboardMarkup(buttons)
 
@@ -156,12 +162,20 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
             )
 
         elif data == "start":
-            inline_buttons = InlineKeyboardMarkup([
+            rows = [
                 [
                     InlineKeyboardButton("• about", callback_data="about"),
                     InlineKeyboardButton("Help •", callback_data="help")
                 ]
-            ])
+            ]
+            extra_row = []
+            if UPDATES_URL:
+                extra_row.append(InlineKeyboardButton("📢 Uᴘᴅᴀᴛᴇs", url=UPDATES_URL))
+            if SUPPORT_URL:
+                extra_row.append(InlineKeyboardButton("💬 Sᴜᴘᴘᴏʀᴛ", url=SUPPORT_URL))
+            if extra_row:
+                rows.append(extra_row)
+            inline_buttons = InlineKeyboardMarkup(rows)
 
             try:
                 await callback_query.edit_message_media(
@@ -262,5 +276,8 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
                 pass
 
     except Exception as e:
-        print(f"Error in callback handler: {e}")
-        await callback_query.answer("An error occurred. Please try again.", show_alert=True)
+        logger.error(f"Error in callback handler (data={data!r}): {e}", exc_info=True)
+        try:
+            await callback_query.answer("An error occurred. Please try again.", show_alert=True)
+        except Exception:
+            pass
