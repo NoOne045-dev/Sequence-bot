@@ -132,11 +132,11 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
         elif data == "about":
             user = await client.get_users(OWNER_ID)  # Make sure OWNER_ID is defined somewhere
             await callback_query.edit_message_media(
-                InputMediaPhoto("https://envs.sh/Wdj.jpg", ABOUT_TXT),
+                InputMediaPhoto("https://ibb.co/FqKF4P2j", ABOUT_TXT),
                 reply_markup=InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("• back", callback_data="start"),
-                        InlineKeyboardButton("close •", callback_data="close")
+                        InlineKeyboardButton("• ʙᴀᴄᴋ", callback_data="start"),
+                        InlineKeyboardButton("ᴄʟᴏsᴇ •", callback_data="close")
                     ]
                 ])
             )
@@ -144,7 +144,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
         elif data == "help":
             await callback_query.edit_message_media(
                 InputMediaPhoto(
-                    "https://envs.sh/Wdj.jpg",
+                    "https://ibb.co/FqKF4P2j",
                     HELP_TXT.format(
                         first=callback_query.from_user.first_name,
                         last=callback_query.from_user.last_name or "",
@@ -155,8 +155,8 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
                 ),
                 reply_markup=InlineKeyboardMarkup([
                     [
-                        InlineKeyboardButton("• back", callback_data="start"),
-                        InlineKeyboardButton("close •", callback_data="close")
+                        InlineKeyboardButton("• ʙᴀᴄᴋ", callback_data="start"),
+                        InlineKeyboardButton("ᴄʟᴏsᴇ •", callback_data="close")
                     ]
                 ])
             )
@@ -164,8 +164,8 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
         elif data == "start":
             rows = [
                 [
-                    InlineKeyboardButton("• about", callback_data="about"),
-                    InlineKeyboardButton("Help •", callback_data="help")
+                    InlineKeyboardButton("• ᴀʙᴏᴜᴛ", callback_data="about"),
+                    InlineKeyboardButton("ʜᴇʟᴘ •", callback_data="help")
                 ]
             ]
             extra_row = []
@@ -264,7 +264,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
             await callback_query.message.edit_text(
                 "Select a channel to toggle its force-sub mode:",
                 reply_markup=InlineKeyboardMarkup(buttons + [
-                    [InlineKeyboardButton("Close", callback_data="close")]
+                    [InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")]
                 ])
             )
 
