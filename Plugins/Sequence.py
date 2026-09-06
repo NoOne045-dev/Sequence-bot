@@ -96,8 +96,17 @@ def parse_and_sort_files(file_data, mode='All'):
 # ==================== EXCLUDED COMMANDS ====================
 
 EXCLUDED_COMMANDS = [
+    # sequence
     "ssequence", "esequence", "mode", "cancel",
-    "add_dump", "rem_dump", "dump_info", "leaderboard"
+    "add_dump", "rem_dump", "dump_info", "leaderboard",
+    # start
+    "start", "help", "about",
+    # admin
+    "add_admin", "deladmin", "admins",
+    "ban", "unban", "banned",
+    "broadcast", "stats", "status",
+    # force-sub
+    "fsub_mode", "addchnl", "delchnl", "listchnl",
 ]
 
 
