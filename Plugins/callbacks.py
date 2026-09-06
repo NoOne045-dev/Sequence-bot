@@ -170,9 +170,9 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
             ]
             extra_row = []
             if UPDATES_URL:
-                extra_row.append(InlineKeyboardButton("📢 Uᴘᴅᴀᴛᴇs", url=UPDATES_URL))
+                extra_row.append(InlineKeyboardButton("Uᴘᴅᴀᴛᴇs", url=UPDATES_URL))
             if SUPPORT_URL:
-                extra_row.append(InlineKeyboardButton("💬 Sᴜᴘᴘᴏʀᴛ", url=SUPPORT_URL))
+                extra_row.append(InlineKeyboardButton("Sᴜᴘᴘᴏʀᴛ", url=SUPPORT_URL))
             if extra_row:
                 rows.append(extra_row)
             inline_buttons = InlineKeyboardMarkup(rows)
