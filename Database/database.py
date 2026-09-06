@@ -9,7 +9,16 @@ logging.basicConfig(level=logging.INFO)
 
 class Master:
     def __init__(self, DB_URL, DB_NAME):
-        self.dbclient = motor.motor_asyncio.AsyncIOMotorClient(DB_URL)
+        if not DB_URL or not DB_NAME:
+            logging.error(
+                "DB_URI / DB_NAME is empty. Set them in your environment (or .env) "
+                "before starting the bot."
+            )
+        self.dbclient = motor.motor_asyncio.AsyncIOMotorClient(
+            DB_URL,
+            serverSelectionTimeoutMS=10000,  # fail fast (10s) instead of hanging
+            connectTimeoutMS=10000,
+        )
         self.database = self.dbclient[DB_NAME]
 
         # Collections
