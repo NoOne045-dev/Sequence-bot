@@ -215,14 +215,21 @@ async def start_command(client: Client, message: Message):
     # Add user to database
     await Seishiro.add_user(user_id, message)
     
-    inline_buttons = InlineKeyboardMarkup(
+    rows = [
         [
-            [
-                InlineKeyboardButton("• ᴀʙᴏᴜᴛ", callback_data="about"),
-                InlineKeyboardButton("Hᴇʟᴘ •", callback_data="help")
-            ]
+            InlineKeyboardButton("• ᴀʙᴏᴜᴛ", callback_data="about"),
+            InlineKeyboardButton("Hᴇʟᴘ •", callback_data="help")
         ]
-    )
+    ]
+    extra_row = []
+    if UPDATES_URL:
+        extra_row.append(InlineKeyboardButton("📢 Uᴘᴅᴀᴛᴇs", url=UPDATES_URL))
+    if SUPPORT_URL:
+        extra_row.append(InlineKeyboardButton("💬 Sᴜᴘᴘᴏʀᴛ", url=SUPPORT_URL))
+    if extra_row:
+        rows.append(extra_row)
+
+    inline_buttons = InlineKeyboardMarkup(rows)
     
     try:
         await message.reply_photo(
