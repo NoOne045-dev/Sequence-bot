@@ -4,9 +4,10 @@ from Plugins.start import *
 from Database.database import Seishiro
 from pyrogram.types import Message, ChatMemberUpdated, ChatJoinRequest, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram import Client, filters
-from pyrogram.errors import PeerIdInvalid, FloodWait, InputUserDeactivated, UserIsBlocked, PeerIdInvalid
+from pyrogram.errors import PeerIdInvalid, FloodWait, InputUserDeactivated, UserIsBlocked, RPCError
 from pyrogram.enums import ChatType, ChatMemberStatus
-from datetime import date
+from datetime import date, timedelta
+import asyncio
 import time
 import logging
 
@@ -367,18 +368,16 @@ async def change_force_sub_mode(client: Client, message: Message):
 @Client.on_chat_member_updated()
 async def handle_Chatmembers(client, chat_member_updated: ChatMemberUpdated):
     chat_id = chat_member_updated.chat.id
+    old_member = chat_member_updated.old_chat_member
 
-    if await Seishiro.req_user_exist(chat_id, user_id):
-        old_member = chat_member_updated.old_chat_member
+    if not old_member or not old_member.user:
+        return
 
-        if not old_member:
-            return
+    if old_member.status == ChatMemberStatus.MEMBER:
+        user_id = old_member.user.id
 
-        if old_member.status == ChatMemberStatus.MEMBER:
-            user_id = old_member.user.id
-
-            if await Seishiro.req_user_exist(chat_id, user_id):
-                await Seishiro.del_req_user(chat_id, user_id)
+        if await Seishiro.req_user_exist(chat_id, user_id):
+            await Seishiro.del_req_user(chat_id, user_id)
 
 
 # This handler will capture any join request to the channel/group where the bot is an admin
@@ -666,4 +665,3 @@ async def get_stats(bot, message):
     end_t = time.time()
     time_taken_s = (end_t - start_t) * 1000
     await st.edit(text=f"**Bᴏᴛ Sᴛᴀᴛᴜꜱ:** \n\n**➲ Bᴏᴛ Uᴘᴛɪᴍᴇ:** `{uptime}` \n**➲ Pɪɴɢ:** `{time_taken_s:.3f} ms` \n**➲ Vᴇʀsɪᴏɴ:** 2.0.0 \n**➲ Tᴏᴛᴀʟ Uꜱᴇʀꜱ:** `{total_users}`")
-        
