@@ -7,13 +7,10 @@ from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotComman
 from config import *
 from Plugins.route import web_server
 from Database.database import Seishiro
-import pyrogram.utils
 from aiohttp import web
 
-pyrogram.utils.MIN_CHANNEL_ID = -1002449417637
-
 name = """
-Files sequence bot started ✨ Credit:- @RexBots_Official
+Files sequence bot started ✨ Credit:- @CosmicBotz
 """
 
 class Bot(Client):
@@ -47,7 +44,7 @@ class Bot(Client):
                 BotCommand("ssequence", "sᴛᴀʀᴛ sᴇǫᴜᴇɴᴄɪɴɢ ꜰɪʟᴇs"),
                 BotCommand("esequence", "ᴇɴᴅ sᴇǫᴜᴇɴᴄɪɴɢ ᴀɴᴅ sᴇɴᴅ"),
                 BotCommand("mode", "ᴄʜᴀɴɢᴇ sᴏʀᴛɪɴɢ ᴍᴏᴅᴇ"),
-                BotCommand("cancel", "ᴄᴀɴᴄᴇʟ ᴄᴜʀʀᴇɴᴛ sᴇǫᴜᴇɴᴄᴇ"),
+                BotCommand("cancel", "ᴄᴀɴᴄᴇʟ ᴄᴜʀʀᴇɴᴛ sᴇǫᴜᴇɴᴄɪɴɢ"),
                 BotCommand("add_dump", "sᴇᴛ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ"),
                 BotCommand("rem_dump", "ʀᴇᴍᴏᴠᴇ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ"),
                 BotCommand("dump_info", "ᴄʜᴇᴄᴋ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ ɪɴꜰᴏ"),
