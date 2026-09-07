@@ -8,6 +8,17 @@ from config import *
 from Plugins.route import web_server
 from Database.database import Seishiro
 from aiohttp import web
+import time
+
+# Store bot startup time
+BOT_START_TIME = time.time()
+
+def get_readable_time(seconds: int) -> str:
+    m, s = divmod(seconds, 60)
+    h, m = divmod(m, 60)
+    d, h = divmod(h, 24)
+    return f"{d}d {h}h {m}m {s}s"
+
 
 name = """
 Files sequence bot started ✨ Credit:- @CosmicBotz
@@ -70,7 +81,7 @@ class Bot(Client):
                 photo="https://ibb.co/DH3N4Lyr",
                 caption="**I ʀᴇsᴛᴀʀᴛᴇᴅ ᴀɢᴀɪɴ !**",
                 reply_markup=InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("ᴜᴘᴅᴀᴛᴇs", url="https://t.me/RexBots_Official")]]
+                    [[InlineKeyboardButton("ᴜᴘᴅᴀᴛᴇs", url="https://t.me/CosmicBotz")]]
                 )
             )
         except Exception as e:
