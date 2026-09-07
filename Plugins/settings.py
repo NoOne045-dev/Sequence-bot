@@ -7,7 +7,7 @@ from pyrogram.enums import ParseMode
 from config import *
 from Database.database import CosmicBotz
 from Plugins.start import check_ban, check_fsub
-from Plugins.sequence import handle_floodwait, verify_and_set_dump_channel, build_caption, CAPTION_PLACEHOLDER_HELP
+from Plugins.Sequence import handle_floodwait, verify_and_set_dump_channel, build_caption, CAPTION_PLACEHOLDER_HELP
 
 logger = logging.getLogger(__name__)
 
