@@ -5,7 +5,7 @@ from Database.database import Seishiro
 from pyrogram.types import Message, ChatMemberUpdated, ChatJoinRequest, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram import Client, filters
 from pyrogram.errors import PeerIdInvalid, FloodWait, InputUserDeactivated, UserIsBlocked, RPCError
-from pyrogram.enums import ChatType, ChatMemberStatus
+from pyrogram.enums import ChatType, ChatMemberStatus, ParseMode
 from datetime import date, timedelta
 import asyncio
 import time
@@ -25,7 +25,7 @@ async def check_admin(filter, client, message):
         return False
 
 admin = filters.create(check_admin)
-    
+
 #============== Admin commands =============================
 
 # Commands for adding admins by owner
@@ -364,7 +364,7 @@ async def change_force_sub_mode(client: Client, message: Message):
         disable_web_page_preview=True
     )
 
-# This handler captures membership updates (like when a user leaves, banned)
+# This handler captures membership updates
 @Client.on_chat_member_updated()
 async def handle_Chatmembers(client, chat_member_updated: ChatMemberUpdated):
     chat_id = chat_member_updated.chat.id
@@ -380,7 +380,7 @@ async def handle_Chatmembers(client, chat_member_updated: ChatMemberUpdated):
             await Seishiro.del_req_user(chat_id, user_id)
 
 
-# This handler will capture any join request to the channel/group where the bot is an admin
+# This handler will capture any join request to the channel/group
 @Client.on_chat_join_request()
 async def handle_join_request(client, chat_join_request):
     chat_id = chat_join_request.chat.id
@@ -424,7 +424,6 @@ async def add_force_sub(client: Client, message: Message):
             return await temp.edit("<b>❌ Only public or private channels are allowed.</b>")
 
         member = await client.get_chat_member(chat.id, "me")
-        print(f"Bot status: {member.status} in chat: {chat.title} ({chat.id})")
 
         if member.status not in [ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER]:
             return await temp.edit("<b>❌ Bot must be an admin in that channel.</b>")
@@ -506,7 +505,6 @@ async def list_force_sub_channels(client: Client, message: Message):
 @Client.on_message(filters.command("broadcast") & filters.private & admin)
 async def broadcast_handler(client: Client, m: Message):
     try:
-        # Check if command is used as a reply
         if not m.reply_to_message:
             return await m.reply_text(
                 "<b>⚠️ Pʟᴇᴀsᴇ ʀᴇᴘʟʏ ᴛᴏ ᴀ ᴍᴇssᴀɢᴇ ᴛᴏ ʙʀᴏᴀᴅᴄᴀsᴛ ɪᴛ!</b>\n\n"
@@ -557,8 +555,7 @@ async def broadcast_handler(client: Client, m: Message):
                             logger.error(f"Error deleting user {user['_id']}: {e}")
                     done += 1
                     
-                    # Update status every 20 users
-                    if done % 20 == 0:
+                    if done % 50 == 0:
                         try:
                             await sts_msg.edit(
                                 f"Broadcast In Progress: \n\n"
@@ -579,10 +576,8 @@ async def broadcast_handler(client: Client, m: Message):
                     done += 1
                     continue
             
-            # Calculate completion time
             completed_in = timedelta(seconds=int(time.time() - start_time))
             
-            # Send final status
             try:
                 await sts_msg.edit(
                     f"Bʀᴏᴀᴅᴄᴀꜱᴛ Cᴏᴍᴩʟᴇᴛᴇᴅ: \n"
@@ -594,7 +589,6 @@ async def broadcast_handler(client: Client, m: Message):
                 )
             except Exception as e:
                 logger.error(f"Error sending final broadcast status: {e}")
-                # Try sending as new message if edit fails
                 try:
                     await m.reply_text(
                         f"Bʀᴏᴀᴅᴄᴀꜱᴛ Cᴏᴍᴩʟᴇᴛᴇᴅ: \n"
@@ -657,11 +651,30 @@ async def send_msg(user_id, message):
         return 500
 
 @Client.on_message(filters.command(["stats", "status"]) & filters.private & admin)
-async def get_stats(bot, message):
-    total_users = await Seishiro.total_users_count()
-    uptime = time.strftime("%Hh%Mm%Ss", time.gmtime(time.time() - bot.uptime))
-    start_t = time.time()
-    st = await message.reply('<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>')
-    end_t = time.time()
-    time_taken_s = (end_t - start_t) * 1000
-    await st.edit(text=f"**Bᴏᴛ Sᴛᴀᴛᴜꜱ:** \n\n**➲ Bᴏᴛ Uᴘᴛɪᴍᴇ:** `{uptime}` \n**➲ Pɪɴɢ:** `{time_taken_s:.3f} ms` \n**➲ Vᴇʀsɪᴏɴ:** 2.0.0 \n**➲ Tᴏᴛᴀʟ Uꜱᴇʀꜱ:** `{total_users}`")
+async def get_stats(bot: Client, message: Message):
+    try:
+        start_t = time.time()
+        st = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>", quote=True)
+        end_t = time.time()
+        time_taken_ms = (end_t - start_t) * 1000
+
+        total_users = await Seishiro.total_users_count()
+
+        start_uptime = getattr(bot, "uptime", time.time())
+        uptime_seconds = int(time.time() - start_uptime)
+        
+        hours, remainder = divmod(uptime_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        uptime_str = f"{hours:02d}h {minutes:02d}m {seconds:02d}s"
+
+        await st.edit(
+            f"<b>⚡ <u>Bᴏᴛ Sᴛᴀᴛᴜs &amp; Sᴛᴀᴛs</u></b>\n\n"
+            f"<b>➲ Bᴏᴛ Uᴘᴛɪᴍᴇ:</b> <code>{uptime_str}</code>\n"
+            f"<b>➲ Pɪɴɢ:</b> <code>{time_taken_ms:.2f} ms</code>\n"
+            f"<b>➲ Vᴇʀsɪᴏɴ:</b> <code>2.0.0</code>\n"
+            f"<b>➲ Tᴏᴛᴀʟ Uꜱᴇʀꜱ:</b> <code>{total_users}</code>",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")]])
+        )
+    except Exception as e:
+        logger.error(f"Error in get_stats handler: {e}")
+        await message.reply_text(f"<b>❌ Eʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ:</b> <code>{str(e)}</code>")
