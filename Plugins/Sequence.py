@@ -1,26 +1,39 @@
 import re
+import time
 import asyncio
 import logging
+from datetime import datetime
+
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.enums import ParseMode
-from datetime import datetime
 
 from config import *
-from Plugins.callbacks import MODES, get_mode_keyboard  # ← shared with callbacks.py (recommended)
+from Plugins.callbacks import MODES, get_mode_keyboard
 from Database.database import Seishiro
 from Plugins.start import *
 
+# Import uptime variables from bot.py
+try:
+    from bot import BOT_START_TIME, get_readable_time
+except ImportError:
+    BOT_START_TIME = time.time()
+    def get_readable_time(seconds: int) -> str:
+        m, s = divmod(seconds, 60)
+        h, m = divmod(m, 60)
+        d, h = divmod(h, 24)
+        return f"{d}d {h}h {m}m {s}s"
+
 logger = logging.getLogger(__name__)
 
-user_sessions = {}          # Only for active file lists (mode is now from DB)
-pending_notifications = {}  # user_id → {'timer': asyncio.Task, 'last_count': int}
+user_sessions = {}          # Active sequence sessions
+pending_notifications = {}  # User debounce timers
 
 # ==================== FLOODWAIT HANDLER ====================
 
 async def handle_floodwait(func, *args, **kwargs):
-    """Generic FloodWait handler for any Pyrogram method"""
+    """Generic FloodWait and execution wrapper"""
     while True:
         try:
             return await func(*args, **kwargs)
@@ -31,7 +44,7 @@ async def handle_floodwait(func, *args, **kwargs):
             break
         except Exception as e:
             logger.error(f"Error in operation: {e}")
-            break
+            raise e
 
 # ==================== FILE PARSING & SORTING ====================
 
@@ -63,14 +76,6 @@ def extract_file_info(filename, file_format, file_id=None):
 
 
 def parse_and_sort_files(file_data, mode='All'):
-    """
-    Supported modes:
-    • Quality     → quality only
-    • Season      → season only
-    • Episode     → episode only
-    • All         → Season → Episode → Quality     (classic)
-    • AllSQE      → Season → Quality → Episode
-    """
     series, non_series = [], []
 
     for item in file_data:
@@ -85,7 +90,7 @@ def parse_and_sort_files(file_data, mode='All'):
         series = sorted(series, key=lambda x: (x['episode'], x['filename'].lower()))
     elif mode == 'AllSQE':
         series = sorted(series, key=lambda x: (x['season'], x['quality_order'], x['episode']))
-    else:  # 'All' - default/classic
+    else:  # 'All' default
         series = sorted(series, key=lambda x: (x['season'], x['episode'], x['quality_order']))
 
     non_series = sorted(non_series, key=lambda x: (x['filename'].lower(), x['quality_order']))
@@ -96,16 +101,12 @@ def parse_and_sort_files(file_data, mode='All'):
 # ==================== EXCLUDED COMMANDS ====================
 
 EXCLUDED_COMMANDS = [
-    # sequence
     "ssequence", "esequence", "mode", "cancel",
     "add_dump", "rem_dump", "dump_info", "leaderboard",
-    # start
     "start", "help", "about",
-    # admin
     "add_admin", "deladmin", "admins",
     "ban", "unban", "banned",
     "broadcast", "stats", "status",
-    # force-sub
     "fsub_mode", "addchnl", "delchnl", "listchnl",
 ]
 
@@ -135,7 +136,6 @@ async def collect_files(client: Client, message: Message):
         files = session['files']
         added_this_time = 0
 
-        # Text as filenames
         if message.text and not message.text.startswith("/"):
             for line in filter(None, map(str.strip, message.text.splitlines())):
                 files.append({'filename': line, 'format': 'text'})
@@ -173,7 +173,6 @@ async def collect_files(client: Client, message: Message):
 
         current_total = len(files)
 
-        # Debounce notification
         if user_id in pending_notifications:
             old_task = pending_notifications[user_id].get('timer')
             if old_task and not old_task.done():
@@ -183,7 +182,6 @@ async def collect_files(client: Client, message: Message):
             await asyncio.sleep(2.3)
 
             if user_id in user_sessions and len(user_sessions[user_id]['files']) == current_total:
-                # Always read from database
                 mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
                 mode_display = MODES.get(mode_key, MODES["All"])["button"]
 
@@ -220,11 +218,8 @@ async def collect_files(client: Client, message: Message):
 async def arrange_cmd(client: Client, message: Message):
     try:
         user_id = message.from_user.id
-        
-        # Initialize session - files only (mode from DB)
         user_sessions[user_id] = {'files': []}
 
-        # Show current mode on start
         mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
         mode_name = MODES.get(mode_key, MODES["All"])["button"]
 
@@ -284,16 +279,13 @@ async def end_cmd(client: Client, message: Message):
             await handle_floodwait(message.reply_text, "Nᴏ ғɪʟᴇs ᴡᴇʀᴇ sᴇɴᴛ ғᴏʀ sᴇǫᴜᴇɴᴄᴇ")
             return
 
-        # Cleanup pending notification
         if user_id in pending_notifications:
             task = pending_notifications[user_id].get('timer')
             if task and not task.done():
                 task.cancel()
             pending_notifications.pop(user_id, None)
 
-        # Read sorting mode from database
         mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
-
         dump_channel = await Seishiro.get_dump_channel(user_id)
 
         series, non_series = parse_and_sort_files(session['files'], mode_key)
@@ -364,11 +356,7 @@ async def end_cmd(client: Client, message: Message):
                 continue
 
         completion_msg = f"✅ Sᴜᴄᴄᴇssғᴜʟʟʏ sᴇɴᴛ {sent_count}/{total_files} ғɪʟᴇs"
-
-        if is_dump_mode:
-            completion_msg += " ᴛᴏ ʏᴏᴜʀ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ!"
-        else:
-            completion_msg += "!"
+        completion_msg += " ᴛᴏ ʏᴏᴜʀ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ!" if is_dump_mode else "!"
 
         if failed_files:
             completion_msg += f"\n\n⚠️ Fᴀɪʟᴇᴅ: {len(failed_files)} ғɪʟᴇs"
@@ -377,7 +365,7 @@ async def end_cmd(client: Client, message: Message):
 
         await handle_floodwait(message.reply_text, completion_msg)
 
-        # Update user stats
+        # Increment totals safely
         await Seishiro.col.update_one(
             {"_id": int(user_id)},
             {
@@ -386,10 +374,10 @@ async def end_cmd(client: Client, message: Message):
                     "mention": message.from_user.mention,
                     "last_activity_timestamp": datetime.now()
                 }
-            }
+            },
+            upsert=True
         )
 
-        # Cleanup session
         if user_id in user_sessions:
             del user_sessions[user_id]
 
@@ -414,12 +402,6 @@ async def cancel_cmd(client: Client, message: Message):
                     task.cancel()
                 pending_notifications.pop(user_id, None)
 
-            if user_sessions[user_id].get('status_msg'):
-                try:
-                    await user_sessions[user_id]['status_msg'].delete()
-                except:
-                    pass
-
             del user_sessions[user_id]
             await handle_floodwait(message.reply_text, "Sᴇǫᴜᴇɴᴄᴇ ᴄᴀɴᴄᴇʟʟᴇᴅ...!!")
         else:
@@ -438,51 +420,55 @@ async def add_dump_cmd(client: Client, message: Message):
     try:
         user_id = message.from_user.id
 
-        from time import time
-        if not hasattr(add_dump_cmd, 'user_cooldowns'):
-            add_dump_cmd.user_cooldowns = {}
-        if user_id in add_dump_cmd.user_cooldowns and (time() - add_dump_cmd.user_cooldowns[user_id]) < 5:
-            return
-        add_dump_cmd.user_cooldowns[user_id] = time()
-
         if len(message.command) < 2:
             await handle_floodwait(
                 message.reply_text,
-                "Usage: <code>/add_dump <Channel ID></code>",
+                "<b>Usage:</b> <code>/add_dump <Channel ID or Username></code>\n\n"
+                "<b>Example:</b> <code>/add_dump -1001234567890</code> or <code>/add_dump @MyChannel</code>",
                 parse_mode=ParseMode.HTML
             )
             return
 
-        target = message.command[1]
+        raw_target = message.command[1].strip()
+
+        # Safely convert target channel ID / username
         try:
-            if target.startswith("-100") or target.startswith("-"):
-                channel_id = int(target)
+            if raw_target.startswith("-100") or raw_target.startswith("-"):
+                channel_id = int(raw_target)
+            elif raw_target.isdigit():
+                channel_id = int(f"-100{raw_target}")
             else:
-                if target.startswith("@"):
-                    target = target[1:]
-                entity = await client.get_chat(target)
-                channel_id = entity.id
+                target_username = raw_target if raw_target.startswith("@") else f"@{raw_target}"
+                chat = await client.get_chat(target_username)
+                channel_id = chat.id
 
             if channel_id > 0:
                 await handle_floodwait(
                     message.reply_text,
-                    "❌ Cannot set a private chat as dump channel. Use negative ID.",
+                    "❌ Cannot set a private user chat as dump channel. Use a valid channel ID or @username.",
                     parse_mode=ParseMode.HTML
                 )
                 return
 
-            test_msg = await handle_floodwait(
-                client.send_message,
+            # Test-send to verify bot admin rights in the channel
+            test_msg = await client.send_message(
                 chat_id=channel_id,
-                text="✅ Dump channel connected successfully!"
+                text="⚙️ <i>Testing dump channel connection...</i>",
+                parse_mode=ParseMode.HTML
             )
-            await asyncio.sleep(2)
+            await asyncio.sleep(1)
             await test_msg.delete()
 
         except Exception as e:
+            logger.error(f"Dump verification failed for {user_id}: {e}")
             await handle_floodwait(
                 message.reply_text,
-                f"❌ Cannot connect to channel.\nMake sure bot is admin.\n\n{str(e)}",
+                f"❌ <b>Cannot connect to channel.</b>\n\n"
+                f"<b>Please check:</b>\n"
+                f"1. Is the bot added to the channel as an <b>Admin</b>?\n"
+                f"2. Does the bot have permission to <b>Post Messages</b>?\n"
+                f"3. Is the Channel ID or Username typed correctly?\n\n"
+                f"<code>Details: {str(e)}</code>",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -491,13 +477,15 @@ async def add_dump_cmd(client: Client, message: Message):
 
         await handle_floodwait(
             message.reply_text,
-            f"✅ Dump channel saved!\nID: <code>{channel_id}</code>\n\nUse /esequence to send files there.",
+            f"✅ <b>Dump channel saved successfully!</b>\n"
+            f"Channel ID: <code>{channel_id}</code>\n\n"
+            f"All future sequence output will be sent there automatically.",
             parse_mode=ParseMode.HTML
         )
 
     except Exception as e:
         logger.error(f"Error in add_dump: {e}")
-        await handle_floodwait(message.reply_text, f"❌ Error: {str(e)}", parse_mode=ParseMode.HTML)
+        await handle_floodwait(message.reply_text, f"❌ Error processing command: {str(e)}", parse_mode=ParseMode.HTML)
 
 
 @Client.on_message(filters.command("rem_dump") & filters.private)
@@ -542,25 +530,62 @@ async def dump_info_cmd(client: Client, message: Message):
             chat = await client.get_chat(dump_channel)
             await handle_floodwait(
                 message.reply_text,
-                f"📍 **Your Dump Channel:**\n\n"
+                f"📍 <b>Your Dump Channel:</b>\n\n"
                 f"Name: <b>{chat.title}</b>\n"
                 f"ID: <code>{dump_channel}</code>\n"
                 f"Username: @{chat.username if chat.username else 'N/A'}\n\n"
                 f"Use /rem_dump to remove.",
                 parse_mode=ParseMode.HTML
             )
-        except:
+        except Exception:
             await handle_floodwait(
                 message.reply_text,
-                f"📍 **Your Dump Channel:**\n\n"
+                f"📍 <b>Your Dump Channel:</b>\n\n"
                 f"ID: <code>{dump_channel}</code>\n\n"
-                f"Use /rem_dump to remove.\n(Couldn't fetch title)",
+                f"Use /rem_dump to remove.",
                 parse_mode=ParseMode.HTML
             )
 
     except Exception as e:
         logger.error(f"Error in dump_info: {e}")
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
+
+
+# ==================== STATS & STATUS ====================
+
+@Client.on_message(filters.command(["stats", "status"]) & filters.private)
+@check_ban
+@check_fsub
+async def stats_cmd(client: Client, message: Message):
+    try:
+        user_id = message.from_user.id
+
+        user_doc = await Seishiro.col.find_one({"_id": user_id})
+        user_count = user_doc.get("sequence_count", 0) if user_doc else 0
+        dump_channel = await Seishiro.get_dump_channel(user_id)
+        mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
+        mode_name = MODES.get(mode_key, MODES["All"])["button"]
+
+        uptime_sec = int(time.time() - BOT_START_TIME)
+        uptime_str = get_readable_time(uptime_sec)
+
+        text = (
+            f"📊 <b>Bot & Account Status</b>\n\n"
+            f"⏱ <b>System Uptime:</b> <code>{uptime_str}</code>\n"
+            f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
+            f"📁 <b>Files Sequenced:</b> <code>{user_count:,}</code>\n"
+            f"⚙️ <b>Active Mode:</b> <b>{mode_name}</b>\n"
+            f"📤 <b>Dump Channel:</b> <code>{dump_channel if dump_channel else 'Not Set'}</code>"
+        )
+
+        await handle_floodwait(
+            message.reply_text,
+            text,
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in stats command: {e}")
+        await handle_floodwait(message.reply_text, "❌ Error fetching stats status.")
 
 
 # ==================== LEADERBOARD ====================
@@ -582,9 +607,8 @@ async def leaderboard_cmd(client: Client, message: Message):
             await handle_floodwait(
                 message.reply_text,
                 "📊 <b>Sequence Leaderboard</b>\n\n"
-                "❌ No users have sequenced files yet!",
-                parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True
+                "❌ No user data found yet!",
+                parse_mode=ParseMode.HTML
             )
             return
 
@@ -604,7 +628,7 @@ async def leaderboard_cmd(client: Client, message: Message):
 
             rank = medals[idx-1] if idx <= 3 else f"{idx}."
             text += f"{rank} {mention}\n"
-            text += f"   └ <b>{count:,}</b> files sequenced\n\n"
+            text += f"    └ <b>{count:,}</b> files sequenced\n\n"
 
         if current_user_rank is None:
             user_doc = await Seishiro.col.find_one({"_id": user_id})
@@ -616,7 +640,7 @@ async def leaderboard_cmd(client: Client, message: Message):
                 }) + 1
                 text += "─────────────────\n"
                 text += f"📍 <b>Your Rank:</b> #{rank}\n"
-                text += f"   └ <b>{user_count:,}</b> files sequenced"
+                text += f"    └ <b>{user_count:,}</b> files sequenced"
             else:
                 text += "─────────────────\n"
                 text += "📍 You haven't sequenced any files yet!"
@@ -635,5 +659,5 @@ async def leaderboard_cmd(client: Client, message: Message):
         logger.error(f"Leaderboard error: {e}", exc_info=True)
         await handle_floodwait(
             message.reply_text,
-            "❌ Error loading leaderboard. Try again later."
+            "❌ Error loading leaderboard."
         )
