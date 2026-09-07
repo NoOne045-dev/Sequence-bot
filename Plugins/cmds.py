@@ -661,7 +661,12 @@ async def get_stats(bot: Client, message: Message):
         total_users = await Seishiro.total_users_count()
 
         start_uptime = getattr(bot, "uptime", time.time())
-        uptime_seconds = int(time.time() - start_uptime)
+        
+        # Handle both float timestamps and datetime objects for uptime
+        if hasattr(start_uptime, "timestamp"):
+            uptime_seconds = int(time.time() - start_uptime.timestamp())
+        else:
+            uptime_seconds = int(time.time() - float(start_uptime))
         
         hours, remainder = divmod(uptime_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
