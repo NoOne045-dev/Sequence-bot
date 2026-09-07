@@ -184,6 +184,53 @@ class Master:
             logging.error(f"Error removing episode_sticker for {user_id}: {e}")
             return False
 
+    # ==================== CAPTION TEMPLATE (Per User) ====================
+
+    async def get_caption_template(self, user_id: int) -> Optional[str]:
+        """Get user's saved caption template. Returns str or None (means use plain filename)."""
+        try:
+            doc = await self.user_data.find_one({"_id": int(user_id)}, {"caption_template": 1})
+            if doc and doc.get("caption_template"):
+                return doc["caption_template"]
+            return None
+        except Exception as e:
+            logging.error(f"Error getting caption_template for {user_id}: {e}")
+            return None
+
+    async def set_caption_template(self, user_id: int, template: str) -> bool:
+        """Save user's caption template."""
+        try:
+            await self.user_data.update_one(
+                {"_id": int(user_id)},
+                {
+                    "$set": {
+                        "caption_template": template,
+                        "caption_template_updated_at": datetime.utcnow()
+                    }
+                },
+                upsert=True
+            )
+            logging.info(f"Caption template set for {user_id}")
+            return True
+        except Exception as e:
+            logging.error(f"Error setting caption_template for {user_id}: {e}")
+            return False
+
+    async def remove_caption_template(self, user_id: int) -> bool:
+        """Remove user's saved caption template (falls back to plain filename)."""
+        try:
+            result = await self.user_data.update_one(
+                {"_id": int(user_id)},
+                {"$unset": {"caption_template": "", "caption_template_updated_at": ""}}
+            )
+            if result.modified_count > 0:
+                logging.info(f"Caption template removed for user {user_id}")
+                return True
+            return False
+        except Exception as e:
+            logging.error(f"Error removing caption_template for {user_id}: {e}")
+            return False
+
     # ==================== SEQUENCE MODE (Sorting Preference) ====================
 
     async def get_sequence_mode(self, user_id: int) -> str:

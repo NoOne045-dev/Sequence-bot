@@ -7,7 +7,7 @@ from pyrogram.enums import ParseMode
 from config import *
 from Database.database import CosmicBotz
 from Plugins.start import check_ban, check_fsub
-from Plugins.Sequence import handle_floodwait, verify_and_set_dump_channel
+from Plugins.sequence import handle_floodwait, verify_and_set_dump_channel, build_caption, CAPTION_PLACEHOLDER_HELP
 
 logger = logging.getLogger(__name__)
 
@@ -18,11 +18,15 @@ pending_settings = {}
 async def build_settings_view(user_id):
     dump_channel = await CosmicBotz.get_dump_channel(user_id)
     sticker = await CosmicBotz.get_episode_sticker(user_id)
+    caption_template = await CosmicBotz.get_caption_template(user_id)
+
+    caption_preview = f"<code>{caption_template}</code>" if caption_template else "Default (filename)"
 
     text = (
         "<b>⚙️ Yᴏᴜʀ Sᴇᴛᴛɪɴɢs</b>\n\n"
         f"📍 <b>Dump Channel:</b> <code>{dump_channel if dump_channel else 'Not set'}</code>\n"
-        f"🎟️ <b>Episode Sticker:</b> {'Set ✅' if sticker else 'Not set'}\n\n"
+        f"🎟️ <b>Episode Sticker:</b> {'Set ✅' if sticker else 'Not set'}\n"
+        f"📝 <b>Caption Template:</b> {caption_preview}\n\n"
         "<i>Episode sticker is sent at each episode boundary when sequencing "
         "in Episode-grouped modes (All, All [S→Q→E], Episode).</i>"
     )
@@ -34,6 +38,10 @@ async def build_settings_view(user_id):
     rows.append([InlineKeyboardButton("🎟️ Set/Change Episode Sticker", callback_data="stg_set_sticker")])
     if sticker:
         rows.append([InlineKeyboardButton("🗑️ Remove Episode Sticker", callback_data="stg_rem_sticker")])
+
+    rows.append([InlineKeyboardButton("📝 Set/Change Caption", callback_data="stg_set_caption")])
+    if caption_template:
+        rows.append([InlineKeyboardButton("🗑️ Remove Caption", callback_data="stg_rem_caption")])
 
     rows.append([InlineKeyboardButton("Close ✖️", callback_data="stg_close")])
 
@@ -89,6 +97,21 @@ async def settings_panel_callback(client: Client, cq: CallbackQuery):
             text, kb = await build_settings_view(user_id)
             await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
+        elif data == "stg_set_caption":
+            pending_settings[user_id] = {'action': 'caption', 'chat_id': cq.message.chat.id, 'message_id': cq.message.id}
+            await cq.answer()
+            await cq.message.edit_text(
+                "📝 Send your caption template now.\n\n" + CAPTION_PLACEHOLDER_HELP + "\n\nSend /cancel to abort.",
+                parse_mode=ParseMode.HTML
+            )
+
+        elif data == "stg_rem_caption":
+            pending_settings.pop(user_id, None)
+            await CosmicBotz.remove_caption_template(user_id)
+            await cq.answer("Caption template removed")
+            text, kb = await build_settings_view(user_id)
+            await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
         elif data == "stg_close":
             await cq.answer()
             pending_settings.pop(user_id, None)
@@ -131,8 +154,27 @@ async def settings_text_capture(client: Client, message: Message):
         raise ContinuePropagation
 
     pending = pending_settings.get(user_id)
-    if not pending or pending.get('action') != 'dump':
+    if not pending or pending.get('action') not in ('dump', 'caption'):
         raise ContinuePropagation
+
+    if pending['action'] == 'caption':
+        template = message.text.strip()
+        await CosmicBotz.set_caption_template(user_id, template)
+        preview = build_caption(template, {
+            'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
+            'season': 1, 'episode': 5, 'quality': '720P'
+        })
+        msg = f"✅ Caption template saved!\n\nPreview:\n<code>{preview}</code>"
+        pending_settings.pop(user_id, None)
+        text, kb = await build_settings_view(user_id)
+        try:
+            await client.edit_message_text(
+                pending['chat_id'], pending['message_id'],
+                msg + "\n\n" + text, reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+        except Exception:
+            await handle_floodwait(message.reply_text, msg, parse_mode=ParseMode.HTML)
+        return
 
     raw_target = message.text.strip()
     success, msg, _ = await verify_and_set_dump_channel(client, user_id, raw_target)

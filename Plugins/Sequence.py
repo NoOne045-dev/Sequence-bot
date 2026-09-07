@@ -24,12 +24,24 @@ pending_notifications = {}  # User debounce timers
 EXCLUDED_COMMANDS = [
     "ssequence", "esequence", "mode", "cancel", "settings",
     "add_dump", "rem_dump", "dump_info", "leaderboard",
+    "set_caption", "rem_caption", "caption_info",
     "start", "help", "about",
     "add_admin", "deladmin", "admins",
     "ban", "unban", "banned",
     "broadcast", "stats", "status",
     "fsub_mode", "addchnl", "delchnl", "listchnl",
 ]
+
+# Placeholders supported inside a user's caption template.
+CAPTION_PLACEHOLDER_HELP = (
+    "<b>Placeholders you can use:</b>\n"
+    "<code>{filename}</code> — original file name\n"
+    "<code>{show_title}</code> — cleaned show/movie title\n"
+    "<code>{season}</code> — season number (e.g. 01)\n"
+    "<code>{episode}</code> — episode number (e.g. 05)\n"
+    "<code>{quality}</code> — quality tag (e.g. 720p)\n\n"
+    "<b>Example:</b>\n<code>🎬 {show_title} S{season}E{episode} [{quality}]</code>"
+)
 
 # Modes where files are grouped by (season, episode) so episode
 # separators / stickers make sense. "All" additionally gets the
@@ -97,6 +109,50 @@ async def verify_and_set_dump_channel(client, user_id, raw_target):
         f"Channel ID: <code>{channel_id}</code>"
     ), channel_id
 
+
+def build_caption(template, file_info):
+    """
+    Renders a user's caption template against a file's extracted info.
+    Falls back to the plain filename if no template is set, or if the
+    template references an unknown placeholder / fails to render.
+    """
+    filename = file_info.get('filename', 'Unknown')
+
+    if not template:
+        return filename
+
+    season = file_info.get('season') or 0
+    episode = file_info.get('episode') or 0
+
+    values = {
+        'filename': filename,
+        'show_title': file_info.get('show_title', '') or filename,
+        'season': f"{season:02d}" if season else "",
+        'episode': f"{episode:02d}" if episode else "",
+        'quality': file_info.get('quality', '') or "Unknown",
+    }
+
+    try:
+        return template.format(**values)
+    except Exception as e:
+        logger.warning(f"Caption template render failed, falling back to filename: {e}")
+        return filename
+
+
+async def send_with_thumb(method, thumb=None, **kwargs):
+    """
+    Wraps a pyrogram send_* call. Tries to attach the original thumbnail
+    (preserves the video/document cover after re-sequencing); if attaching
+    the thumb ever fails for any reason, retries without it so the file
+    itself is never lost over a cosmetic thumbnail issue.
+    """
+    if thumb:
+        try:
+            return await handle_floodwait(method, thumb=thumb, **kwargs)
+        except Exception as e:
+            logger.warning(f"Sending with thumb failed, retrying without thumb: {e}")
+    return await handle_floodwait(method, **kwargs)
+
 # ==================== FILE PARSING & MISSING EPISODES ====================
 
 def clean_show_title(filename):
@@ -111,7 +167,7 @@ def clean_show_title(filename):
     return clean if clean else "Unknown Show"
 
 
-def extract_file_info(filename, file_format, file_id=None):
+def extract_file_info(filename, file_format, file_id=None, extra=None):
     quality_match = re.search(QUALITY_PATTERN, filename, re.IGNORECASE)
     quality = quality_match.group(1).upper() if quality_match else 'Unknown'
 
@@ -128,7 +184,7 @@ def extract_file_info(filename, file_format, file_id=None):
 
     show_title = clean_show_title(filename)
 
-    return {
+    info = {
         'filename': filename,
         'format': file_format,
         'file_id': file_id,
@@ -140,12 +196,20 @@ def extract_file_info(filename, file_format, file_id=None):
         'is_series': bool(season or episode)
     }
 
+    # Carry through thumbnail / duration / dimensions captured at collection
+    # time so the original cover art survives re-sequencing.
+    if extra:
+        info.update(extra)
+
+    return info
+
 
 def parse_and_sort_files(file_data, mode='All'):
     series, non_series = [], []
 
     for item in file_data:
-        info = extract_file_info(item['filename'], item['format'], item.get('file_id'))
+        extra = {k: v for k, v in item.items() if k not in ('filename', 'format', 'file_id')}
+        info = extract_file_info(item['filename'], item['format'], item.get('file_id'), extra=extra)
         (series if info['is_series'] else non_series).append(info)
 
     if mode == 'Quality':
@@ -271,29 +335,39 @@ async def collect_files(client: Client, message: Message):
                 added_this_time += 1
 
         if message.document:
+            doc_thumb = message.document.thumbs[-1].file_id if message.document.thumbs else None
             files.append({
                 'filename': message.document.file_name,
                 'format': 'document',
-                'file_id': message.document.file_id
+                'file_id': message.document.file_id,
+                'thumb': doc_thumb
             })
             added_this_time += 1
 
         if message.video:
             filename = message.video.file_name or \
                        (message.caption if message.caption else f"video_{message.video.file_unique_id}.mp4")
+            vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
             files.append({
                 'filename': filename,
                 'format': 'video',
-                'file_id': message.video.file_id
+                'file_id': message.video.file_id,
+                'thumb': vid_thumb,
+                'duration': message.video.duration,
+                'width': message.video.width,
+                'height': message.video.height
             })
             added_this_time += 1
 
         if message.audio:
             filename = message.audio.file_name or f"audio_{message.audio.file_unique_id}"
+            aud_thumb = message.audio.thumbs[-1].file_id if getattr(message.audio, 'thumbs', None) else None
             files.append({
                 'filename': filename,
                 'format': 'audio',
-                'file_id': message.audio.file_id
+                'file_id': message.audio.file_id,
+                'thumb': aud_thumb,
+                'duration': message.audio.duration
             })
             added_this_time += 1
 
@@ -434,6 +508,7 @@ async def end_cmd(client: Client, message: Message):
         mode_key = await CosmicBotz.get_sequence_mode(user_id) or "All"
         dump_channel = await CosmicBotz.get_dump_channel(user_id)
         episode_sticker = await CosmicBotz.get_episode_sticker(user_id)
+        caption_template = await CosmicBotz.get_caption_template(user_id)
 
         series, non_series = parse_and_sort_files(session['files'], mode_key)
         total_files = len(series) + len(non_series)
@@ -490,12 +565,31 @@ async def end_cmd(client: Client, message: Message):
                         last_episode_key = current_key
 
                 if file_id and file_format in ['document', 'video', 'audio']:
+                    caption_text = build_caption(caption_template, file_info)
+                    thumb = file_info.get('thumb')
+
                     if file_format == 'document':
-                        await handle_floodwait(client.send_document, chat_id=target_chat, document=file_id, caption=filename)
+                        await send_with_thumb(
+                            client.send_document, thumb=thumb,
+                            chat_id=target_chat, document=file_id, caption=caption_text,
+                            parse_mode=ParseMode.HTML
+                        )
                     elif file_format == 'video':
-                        await handle_floodwait(client.send_video, chat_id=target_chat, video=file_id, caption=filename)
+                        await send_with_thumb(
+                            client.send_video, thumb=thumb,
+                            chat_id=target_chat, video=file_id, caption=caption_text,
+                            parse_mode=ParseMode.HTML,
+                            duration=file_info.get('duration') or 0,
+                            width=file_info.get('width') or 0,
+                            height=file_info.get('height') or 0
+                        )
                     elif file_format == 'audio':
-                        await handle_floodwait(client.send_audio, chat_id=target_chat, audio=file_id, caption=filename)
+                        await send_with_thumb(
+                            client.send_audio, thumb=thumb,
+                            chat_id=target_chat, audio=file_id, caption=caption_text,
+                            parse_mode=ParseMode.HTML,
+                            duration=file_info.get('duration') or 0
+                        )
                 else:
                     await handle_floodwait(client.send_message, chat_id=target_chat, text=f"📄 {filename}")
 
@@ -678,6 +772,98 @@ async def dump_info_cmd(client: Client, message: Message):
 
     except Exception as e:
         logger.error(f"Error in dump_info: {e}")
+        await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
+
+
+# ==================== CAPTION TEMPLATE COMMANDS ====================
+
+@Client.on_message(filters.command("set_caption") & filters.private)
+@check_ban
+@check_fsub
+async def set_caption_cmd(client: Client, message: Message):
+    try:
+        user_id = message.from_user.id
+
+        if len(message.command) < 2:
+            await handle_floodwait(
+                message.reply_text,
+                "<b>Usage:</b> <code>/set_caption &lt;template&gt;</code>\n\n" + CAPTION_PLACEHOLDER_HELP,
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        template = message.text.split(None, 1)[1].strip()
+        await CosmicBotz.set_caption_template(user_id, template)
+
+        preview = build_caption(template, {
+            'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
+            'season': 1, 'episode': 5, 'quality': '720P'
+        })
+
+        await handle_floodwait(
+            message.reply_text,
+            f"✅ <b>Caption template saved!</b>\n\n<b>Preview:</b>\n<code>{preview}</code>",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in set_caption: {e}")
+        await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
+
+
+@Client.on_message(filters.command("rem_caption") & filters.private)
+@check_ban
+@check_fsub
+async def rem_caption_cmd(client: Client, message: Message):
+    try:
+        user_id = message.from_user.id
+        current = await CosmicBotz.get_caption_template(user_id)
+
+        if not current:
+            await handle_floodwait(message.reply_text, "Yᴏᴜ ʜᴀᴠᴇɴ'ᴛ sᴇᴛ ᴀ ᴄᴀᴘᴛɪᴏɴ ᴛᴇᴍᴘʟᴀᴛᴇ ʏᴇᴛ.")
+            return
+
+        await CosmicBotz.remove_caption_template(user_id)
+        await handle_floodwait(
+            message.reply_text,
+            "✅ Caption template removed! Files will use their plain filename as caption again.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in rem_caption: {e}")
+        await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
+
+
+@Client.on_message(filters.command("caption_info") & filters.private)
+@check_ban
+@check_fsub
+async def caption_info_cmd(client: Client, message: Message):
+    try:
+        user_id = message.from_user.id
+        template = await CosmicBotz.get_caption_template(user_id)
+
+        if not template:
+            await handle_floodwait(
+                message.reply_text,
+                "❌ No caption template set. Files use their plain filename as caption.\n\n"
+                "Use /set_caption to create one.\n\n" + CAPTION_PLACEHOLDER_HELP,
+                parse_mode=ParseMode.HTML
+            )
+            return
+
+        preview = build_caption(template, {
+            'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
+            'season': 1, 'episode': 5, 'quality': '720P'
+        })
+
+        await handle_floodwait(
+            message.reply_text,
+            f"📝 <b>Your Caption Template:</b>\n<code>{template}</code>\n\n"
+            f"<b>Preview:</b>\n<code>{preview}</code>\n\n"
+            "Use /rem_caption to remove it.",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        logger.error(f"Error in caption_info: {e}")
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
 
 

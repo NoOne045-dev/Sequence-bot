@@ -94,7 +94,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
 
             # Optional: update active session if available
             try:
-                from Plugins.sequence import user_sessions
+                from Plugins.Sequence import user_sessions
                 if user_id in user_sessions:
                     user_sessions[user_id]['mode'] = mode_key
             except ImportError:
