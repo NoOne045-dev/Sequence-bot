@@ -14,7 +14,7 @@ from Plugins.callbacks import MODES, get_mode_keyboard
 from Database.database import Seishiro
 from Plugins.start import *
 
-# Import uptime variables from bot.py
+# Uptime import fallback
 try:
     from bot import BOT_START_TIME, get_readable_time
 except ImportError:
@@ -30,10 +30,20 @@ logger = logging.getLogger(__name__)
 user_sessions = {}          # Active sequence sessions
 pending_notifications = {}  # User debounce timers
 
+# Ensure commands are strictly ignored by text collector
+EXCLUDED_COMMANDS = [
+    "ssequence", "esequence", "mode", "cancel",
+    "add_dump", "rem_dump", "dump_info", "leaderboard",
+    "start", "help", "about",
+    "add_admin", "deladmin", "admins",
+    "ban", "unban", "banned",
+    "broadcast", "stats", "status",
+    "fsub_mode", "addchnl", "delchnl", "listchnl",
+]
+
 # ==================== FLOODWAIT HANDLER ====================
 
 async def handle_floodwait(func, *args, **kwargs):
-    """Generic FloodWait and execution wrapper"""
     while True:
         try:
             return await func(*args, **kwargs)
@@ -46,11 +56,23 @@ async def handle_floodwait(func, *args, **kwargs):
             logger.error(f"Error in operation: {e}")
             raise e
 
-# ==================== FILE PARSING & SORTING ====================
+# ==================== FILE PARSING & MISSING EPISODES ====================
+
+def clean_show_title(filename):
+    """Extract clean title before season/episode/quality indicators"""
+    temp = re.sub(QUALITY_PATTERN, '', filename, flags=re.IGNORECASE)
+    temp = re.sub(SEASON_PATTERN, '', temp, flags=re.IGNORECASE)
+    temp = re.sub(EPISODE_PATTERN, '', temp, flags=re.IGNORECASE)
+    # Remove file extensions and common metadata inside brackets/parens
+    temp = re.sub(r'\.(mkv|mp4|avi|mov|flv|webm)$', '', temp, flags=re.IGNORECASE)
+    temp = re.sub(r'\[.*?\]|\(.*?\)', '', temp)
+    clean = re.sub(r'[._-]', ' ', temp).strip()
+    return clean if clean else "Unknown Show"
+
 
 def extract_file_info(filename, file_format, file_id=None):
     quality_match = re.search(QUALITY_PATTERN, filename, re.IGNORECASE)
-    quality = quality_match.group(1).lower() if quality_match else 'unknown'
+    quality = quality_match.group(1).upper() if quality_match else 'Unknown'
 
     temp = re.sub(QUALITY_PATTERN, '', filename, flags=re.IGNORECASE) if quality_match else filename
 
@@ -63,14 +85,17 @@ def extract_file_info(filename, file_format, file_id=None):
         nums = re.findall(r'\d{1,3}', temp)
         episode = int(nums[-1]) if nums else 0
 
+    show_title = clean_show_title(filename)
+
     return {
         'filename': filename,
         'format': file_format,
         'file_id': file_id,
+        'show_title': show_title,
         'season': season,
         'episode': episode,
         'quality': quality,
-        'quality_order': QUALITY_ORDER.get(quality, 7),
+        'quality_order': QUALITY_ORDER.get(quality.lower(), 7),
         'is_series': bool(season or episode)
     }
 
@@ -98,17 +123,47 @@ def parse_and_sort_files(file_data, mode='All'):
     return series, non_series
 
 
-# ==================== EXCLUDED COMMANDS ====================
+def find_missing_episodes(all_files):
+    """
+    Groups files by Show -> Quality and finds gaps in episode numbers.
+    """
+    groups = {}  # { "Show Name": { "1080p": [1, 3, 4, 6] } }
 
-EXCLUDED_COMMANDS = [
-    "ssequence", "esequence", "mode", "cancel",
-    "add_dump", "rem_dump", "dump_info", "leaderboard",
-    "start", "help", "about",
-    "add_admin", "deladmin", "admins",
-    "ban", "unban", "banned",
-    "broadcast", "stats", "status",
-    "fsub_mode", "addchnl", "delchnl", "listchnl",
-]
+    for file_info in all_files:
+        if not file_info['is_series'] or file_info['episode'] == 0:
+            continue
+
+        title = file_info['show_title']
+        quality = file_info['quality']
+        ep = file_info['episode']
+
+        if title not in groups:
+            groups[title] = {}
+        if quality not in groups[title]:
+            groups[title][quality] = set()
+
+        groups[title][quality].add(ep)
+
+    missing_report = []
+
+    for title, qualities in groups.items():
+        show_lines = []
+        for quality, ep_set in qualities.items():
+            if not ep_set:
+                continue
+            sorted_eps = sorted(list(ep_set))
+            min_ep, max_ep = sorted_eps[0], sorted_eps[-1]
+            full_range = set(range(min_ep, max_ep + 1))
+            missing = sorted(list(full_range - ep_set))
+
+            if missing:
+                missing_str = ", ".join(str(e) for e in missing)
+                show_lines.append(f"  - {quality}: Ep {missing_str}")
+
+        if show_lines:
+            missing_report.append(f"• {title}:\n" + "\n".join(show_lines))
+
+    return "\n".join(missing_report) if missing_report else None
 
 
 # ==================== FILE COLLECTOR ====================
@@ -218,7 +273,10 @@ async def collect_files(client: Client, message: Message):
 async def arrange_cmd(client: Client, message: Message):
     try:
         user_id = message.from_user.id
-        user_sessions[user_id] = {'files': []}
+        user_sessions[user_id] = {
+            'files': [],
+            'start_time': time.time()
+        }
 
         mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
         mode_name = MODES.get(mode_key, MODES["All"])["button"]
@@ -279,6 +337,8 @@ async def end_cmd(client: Client, message: Message):
             await handle_floodwait(message.reply_text, "Nᴏ ғɪʟᴇs ᴡᴇʀᴇ sᴇɴᴛ ғᴏʀ sᴇǫᴜᴇɴᴄᴇ")
             return
 
+        start_time = session.get('start_time', time.time())
+
         if user_id in pending_notifications:
             task = pending_notifications[user_id].get('timer')
             if task and not task.done():
@@ -293,22 +353,13 @@ async def end_cmd(client: Client, message: Message):
         all_sorted_files = series + non_series
 
         is_dump_mode = bool(dump_channel)
+        target_chat = dump_channel if is_dump_mode else message.chat.id
 
-        if is_dump_mode:
-            target_chat = dump_channel
-            await handle_floodwait(
-                message.reply_text,
-                f"📤 Sᴇɴᴅɪɴɢ {total_files} ғɪʟᴇs ᴛᴏ ʏᴏᴜʀ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ...\n"
-                f"Cʜᴀɴɴᴇʟ: <code>{dump_channel}</code>",
-                parse_mode=ParseMode.HTML
-            )
-        else:
-            target_chat = message.chat.id
-            await handle_floodwait(
-                message.reply_text,
-                f"📤 Sᴇɴᴅɪɴɢ {total_files} ғɪʟᴇs ɪɴ sᴇǫᴜᴇɴᴄᴇ ᴛᴏ ᴘʀɪᴠᴀᴛᴇ ᴄʜᴀᴛ...",
-                parse_mode=ParseMode.HTML
-            )
+        status_msg = await handle_floodwait(
+            message.reply_text,
+            f"📤 Sᴇɴᴅɪɴɢ {total_files} ғɪʟᴇs ɪɴ sᴇǫᴜᴇɴᴄᴇ...",
+            parse_mode=ParseMode.HTML
+        )
 
         sent_count = 0
         failed_files = []
@@ -321,32 +372,13 @@ async def end_cmd(client: Client, message: Message):
 
                 if file_id and file_format in ['document', 'video', 'audio']:
                     if file_format == 'document':
-                        await handle_floodwait(
-                            client.send_document,
-                            chat_id=target_chat,
-                            document=file_id,
-                            caption=filename
-                        )
+                        await handle_floodwait(client.send_document, chat_id=target_chat, document=file_id, caption=filename)
                     elif file_format == 'video':
-                        await handle_floodwait(
-                            client.send_video,
-                            chat_id=target_chat,
-                            video=file_id,
-                            caption=filename
-                        )
+                        await handle_floodwait(client.send_video, chat_id=target_chat, video=file_id, caption=filename)
                     elif file_format == 'audio':
-                        await handle_floodwait(
-                            client.send_audio,
-                            chat_id=target_chat,
-                            audio=file_id,
-                            caption=filename
-                        )
+                        await handle_floodwait(client.send_audio, chat_id=target_chat, audio=file_id, caption=filename)
                 else:
-                    await handle_floodwait(
-                        client.send_message,
-                        chat_id=target_chat,
-                        text=f"📄 {filename}"
-                    )
+                    await handle_floodwait(client.send_message, chat_id=target_chat, text=f"📄 {filename}")
 
                 sent_count += 1
 
@@ -355,17 +387,34 @@ async def end_cmd(client: Client, message: Message):
                 failed_files.append(filename)
                 continue
 
-        completion_msg = f"✅ Sᴜᴄᴄᴇssғᴜʟʟʏ sᴇɴᴛ {sent_count}/{total_files} ғɪʟᴇs"
-        completion_msg += " ᴛᴏ ʏᴏᴜʀ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ!" if is_dump_mode else "!"
+        elapsed_sec = int(time.time() - start_time)
+        time_taken_str = time.strftime('%H:%M:%S', time.gmtime(elapsed_sec))
 
-        if failed_files:
-            completion_msg += f"\n\n⚠️ Fᴀɪʟᴇᴅ: {len(failed_files)} ғɪʟᴇs"
-            if len(failed_files) <= 5:
-                completion_msg += "\n" + "\n".join([f"• {f}" for f in failed_files])
+        # Send completion sticker if defined
+        sticker_id = getattr(globals().get('config'), 'COMPLETION_STICKER', None) or os.environ.get("COMPLETION_STICKER")
+        if sticker_id:
+            try:
+                await client.send_sticker(chat_id=message.chat.id, sticker=sticker_id)
+            except Exception as st_err:
+                logger.error(f"Failed to send sticker: {st_err}")
 
-        await handle_floodwait(message.reply_text, completion_msg)
+        # Format final completion text
+        mode_display = MODES.get(mode_key, MODES["All"])["button"].lower()
+        
+        completion_text = (
+            f"Fɪʟᴇꜱ Sᴏʀᴛᴇᴅ: {sent_count}/{total_files}\n"
+            f"Mᴏᴅᴇ: {mode_display}\n"
+            f"Tɪᴍᴇ Tᴀᴋᴇɴ: {time_taken_str}\n"
+        )
 
-        # Increment totals safely
+        # Check missing episodes
+        missing_report = find_missing_episodes(all_sorted_files)
+        if missing_report:
+            completion_text += f"\nMɪꜱꜱɪɴɢ Eᴘɪꜱᴏᴅᴇꜱ:\n{missing_report}"
+
+        await handle_floodwait(message.reply_text, completion_text)
+
+        # Update stats
         await Seishiro.col.update_one(
             {"_id": int(user_id)},
             {
@@ -431,7 +480,6 @@ async def add_dump_cmd(client: Client, message: Message):
 
         raw_target = message.command[1].strip()
 
-        # Safely convert target channel ID / username
         try:
             if raw_target.startswith("-100") or raw_target.startswith("-"):
                 channel_id = int(raw_target)
@@ -450,7 +498,6 @@ async def add_dump_cmd(client: Client, message: Message):
                 )
                 return
 
-            # Test-send to verify bot admin rights in the channel
             test_msg = await client.send_message(
                 chat_id=channel_id,
                 text="⚙️ <i>Testing dump channel connection...</i>",
@@ -551,9 +598,9 @@ async def dump_info_cmd(client: Client, message: Message):
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
 
 
-# ==================== STATS & STATUS ====================
+# ==================== STATS & STATUS (HIGH PRIORITY) ====================
 
-@Client.on_message(filters.command(["stats", "status"]) & filters.private)
+@Client.on_message(filters.command(["stats", "status"]) & filters.private, group=-1)
 @check_ban
 @check_fsub
 async def stats_cmd(client: Client, message: Message):
@@ -578,14 +625,10 @@ async def stats_cmd(client: Client, message: Message):
             f"📤 <b>Dump Channel:</b> <code>{dump_channel if dump_channel else 'Not Set'}</code>"
         )
 
-        await handle_floodwait(
-            message.reply_text,
-            text,
-            parse_mode=ParseMode.HTML
-        )
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Error in stats command: {e}")
-        await handle_floodwait(message.reply_text, "❌ Error fetching stats status.")
+        await message.reply_text("❌ Error fetching stats status.", parse_mode=ParseMode.HTML)
 
 
 # ==================== LEADERBOARD ====================
@@ -606,8 +649,7 @@ async def leaderboard_cmd(client: Client, message: Message):
         if not top_users:
             await handle_floodwait(
                 message.reply_text,
-                "📊 <b>Sequence Leaderboard</b>\n\n"
-                "❌ No user data found yet!",
+                "📊 <b>Sequence Leaderboard</b>\n\n❌ No user data found yet!",
                 parse_mode=ParseMode.HTML
             )
             return
@@ -616,7 +658,6 @@ async def leaderboard_cmd(client: Client, message: Message):
         medals = ["🥇", "🥈", "🥉"]
 
         current_user_rank = None
-        current_user_count = 0
 
         for idx, user in enumerate(top_users, 1):
             count = user.get("sequence_count", 0)
@@ -624,7 +665,6 @@ async def leaderboard_cmd(client: Client, message: Message):
 
             if user["_id"] == user_id:
                 current_user_rank = idx
-                current_user_count = count
 
             rank = medals[idx-1] if idx <= 3 else f"{idx}."
             text += f"{rank} {mention}\n"
