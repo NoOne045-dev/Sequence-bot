@@ -274,4 +274,4 @@ class Master:
 
 
 # Initialize
-Seishiro = Master(DB_URL, DB_NAME)
+CosmicBotz = Master(DB_URL, DB_NAME)

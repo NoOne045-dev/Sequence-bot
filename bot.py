@@ -6,7 +6,7 @@ from pyrogram.enums import ParseMode
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from config import *
 from Plugins.route import web_server
-from Database.database import Seishiro
+from Database.database import CosmicBotz
 from aiohttp import web
 import time
 
@@ -43,7 +43,7 @@ class Bot(Client):
         # Verify database connectivity early so a stale/old DB_URI shows up
         # as a clear log message now, instead of a silent hang later.
         try:
-            await Seishiro.dbclient.admin.command("ping")
+            await CosmicBotz.dbclient.admin.command("ping")
             print("Database connection OK.")
         except Exception as e:
             print(f"WARNING: Could not reach the database (check DB_URI/DB_NAME): {e}")

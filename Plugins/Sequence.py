@@ -11,7 +11,7 @@ from pyrogram.enums import ParseMode
 
 from config import *
 from Plugins.callbacks import MODES, get_mode_keyboard
-from Database.database import Seishiro
+from Database.database import CosmicBotz
 from Plugins.start import *
 
 logger = logging.getLogger(__name__)
@@ -226,7 +226,7 @@ async def collect_files(client: Client, message: Message):
             await asyncio.sleep(2.3)
 
             if user_id in user_sessions and len(user_sessions[user_id]['files']) == current_total:
-                mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
+                mode_key = await CosmicBotz.get_sequence_mode(user_id) or "All"
                 mode_display = MODES.get(mode_key, MODES["All"])["button"]
 
                 text = (
@@ -267,7 +267,7 @@ async def arrange_cmd(client: Client, message: Message):
             'start_time': time.time()
         }
 
-        mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
+        mode_key = await CosmicBotz.get_sequence_mode(user_id) or "All"
         mode_name = MODES.get(mode_key, MODES["All"])["button"]
 
         await handle_floodwait(
@@ -289,7 +289,7 @@ async def arrange_cmd(client: Client, message: Message):
 async def mode_cmd(client: Client, message: Message):
     try:
         user_id = message.from_user.id
-        current = await Seishiro.get_sequence_mode(user_id) or "All"
+        current = await CosmicBotz.get_sequence_mode(user_id) or "All"
         current_name = MODES.get(current, MODES["All"])["button"]
 
         kb = get_mode_keyboard(current)
@@ -334,8 +334,8 @@ async def end_cmd(client: Client, message: Message):
                 task.cancel()
             pending_notifications.pop(user_id, None)
 
-        mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
-        dump_channel = await Seishiro.get_dump_channel(user_id)
+        mode_key = await CosmicBotz.get_sequence_mode(user_id) or "All"
+        dump_channel = await CosmicBotz.get_dump_channel(user_id)
 
         series, non_series = parse_and_sort_files(session['files'], mode_key)
         total_files = len(series) + len(non_series)
@@ -404,7 +404,7 @@ async def end_cmd(client: Client, message: Message):
         await handle_floodwait(message.reply_text, completion_text)
 
         # Update stats
-        await Seishiro.col.update_one(
+        await CosmicBotz.col.update_one(
             {"_id": int(user_id)},
             {
                 "$inc": {"sequence_count": sent_count},
@@ -509,7 +509,7 @@ async def add_dump_cmd(client: Client, message: Message):
             )
             return
 
-        await Seishiro.set_dump_channel(user_id, channel_id)
+        await CosmicBotz.set_dump_channel(user_id, channel_id)
 
         await handle_floodwait(
             message.reply_text,
@@ -530,13 +530,13 @@ async def add_dump_cmd(client: Client, message: Message):
 async def rem_dump_cmd(client: Client, message: Message):
     try:
         user_id = message.from_user.id
-        current = await Seishiro.get_dump_channel(user_id)
+        current = await CosmicBotz.get_dump_channel(user_id)
 
         if not current:
             await handle_floodwait(message.reply_text, "Yᴏᴜ ʜᴀᴠᴇɴ'ᴛ sᴇᴛ ᴀɴʏ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ ʏᴇᴛ.")
             return
 
-        await Seishiro.remove_dump_channel(user_id)
+        await CosmicBotz.remove_dump_channel(user_id)
         await handle_floodwait(
             message.reply_text,
             f"✅ Dump channel removed!\nOld ID: <code>{current}</code>",
@@ -553,7 +553,7 @@ async def rem_dump_cmd(client: Client, message: Message):
 async def dump_info_cmd(client: Client, message: Message):
     try:
         user_id = message.from_user.id
-        dump_channel = await Seishiro.get_dump_channel(user_id)
+        dump_channel = await CosmicBotz.get_dump_channel(user_id)
 
         if not dump_channel:
             await handle_floodwait(
@@ -596,7 +596,7 @@ async def leaderboard_cmd(client: Client, message: Message):
     try:
         user_id = message.from_user.id
 
-        cursor = Seishiro.col.find(
+        cursor = CosmicBotz.col.find(
             {"sequence_count": {"$exists": True, "$gt": 0}}
         ).sort("sequence_count", -1).limit(10)
 
@@ -627,11 +627,11 @@ async def leaderboard_cmd(client: Client, message: Message):
             text += f"    └ <b>{count:,}</b> files sequenced\n\n"
 
         if current_user_rank is None:
-            user_doc = await Seishiro.col.find_one({"_id": user_id})
+            user_doc = await CosmicBotz.col.find_one({"_id": user_id})
             user_count = user_doc.get("sequence_count", 0) if user_doc else 0
 
             if user_count > 0:
-                rank = await Seishiro.col.count_documents({
+                rank = await CosmicBotz.col.count_documents({
                     "sequence_count": {"$gt": user_count}
                 }) + 1
                 text += "─────────────────\n"

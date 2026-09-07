@@ -9,7 +9,7 @@ from pyrogram.errors.exceptions.bad_request_400 import UserNotParticipant
 from functools import wraps
 from datetime import datetime, timedelta
 from config import *
-from Database.database import Seishiro
+from Database.database import CosmicBotz
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,7 @@ def check_ban(func):
         logger.debug(f"check_ban decorator called for user {user_id}")
         
         try:      
-            is_banned = await Seishiro.is_user_banned(user_id)
+            is_banned = await CosmicBotz.is_user_banned(user_id)
             
             if is_banned:
                 logger.debug(f"User {user_id} is banned")
@@ -62,9 +62,9 @@ def check_fsub(func):
                     ChatMemberStatus.MEMBER
                 }
             except UserNotParticipant:
-                mode = await Seishiro.get_channel_mode(channel_id) or await Seishiro.get_channel_mode_all(channel_id)
+                mode = await CosmicBotz.get_channel_mode(channel_id) or await CosmicBotz.get_channel_mode_all(channel_id)
                 if mode == "on":
-                    exists = await Seishiro.req_user_exist(channel_id, user_id)
+                    exists = await CosmicBotz.req_user_exist(channel_id, user_id)
                     return exists
                 return False
             except Exception as e:
@@ -72,14 +72,14 @@ def check_fsub(func):
                 return False
 
         async def is_subscribed(client, user_id):
-            channel_ids = await Seishiro.show_channels()
+            channel_ids = await CosmicBotz.show_channels()
             if not channel_ids:
                 return True
             if user_id == OWNER_ID:
                 return True
             for cid in channel_ids:
                 if not await is_sub(client, user_id, cid):
-                    mode = await Seishiro.get_channel_mode(cid)
+                    mode = await CosmicBotz.get_channel_mode(cid)
                     if mode == "on":
                         await asyncio.sleep(2)
                         if await is_sub(client, user_id, cid):
@@ -118,7 +118,7 @@ async def not_joined(client: Client, message: Message):
     count = 0
 
     try:
-        all_channels = await Seishiro.show_channels()
+        all_channels = await CosmicBotz.show_channels()
         for chat_id in all_channels:
             await message.reply_chat_action(ChatAction.TYPING)
 
@@ -145,7 +145,7 @@ async def not_joined(client: Client, message: Message):
                         chat_data_cache[chat_id] = data
 
                     name = data.title
-                    mode = await Seishiro.get_channel_mode(chat_id)
+                    mode = await CosmicBotz.get_channel_mode(chat_id)
 
                     if mode == "on" and not data.username:
                         invite = await client.create_chat_invite_link(
@@ -174,7 +174,7 @@ async def not_joined(client: Client, message: Message):
                 except Exception as e:
                     logger.error(f"Error with chat {chat_id}: {e}")
                     await temp.edit(
-                        f"<b><i>! Eʀʀᴏʀ, Cᴏɴᴛᴀᴄᴛ ᴅᴇᴠᴇʟᴏᴘᴇʀ ᴛᴏ sᴏʟᴠᴇ ᴛʜᴇ ɪssᴜᴇs @seishiro_obito</i></b>\n"
+                        f"<b><i>! Eʀʀᴏʀ, Cᴏɴᴛᴀᴄᴛ ᴅᴇᴠᴇʟᴏᴘᴇʀ ᴛᴏ sᴏʟᴠᴇ ᴛʜᴇ ɪssᴜᴇs @voidxtora</i></b>\n"
                         f"<blockquote expandable><b>Rᴇᴀsᴏɴ:</b> {e}</blockquote>"
                     )
                     return
@@ -201,7 +201,7 @@ async def not_joined(client: Client, message: Message):
     except Exception as e:
         logger.error(f"Final Error in not_joined: {e}")
         await temp.edit(
-            f"<b><i>! Eʀʀᴏʀ, Cᴏɴᴛᴀᴄᴛ ᴅᴇᴠᴇʟᴏᴘᴇʀ ᴛᴏ sᴏʟᴠᴇ ᴛʜᴇ ɪssᴜᴇs @seishiro_obito</i></b>\n"
+            f"<b><i>! Eʀʀᴏʀ, Cᴏɴᴛᴀᴄᴛ ᴅᴇᴠᴇʟᴏᴘᴇʀ ᴛᴏ sᴏʟᴠᴇ ᴛʜᴇ ɪssᴜᴇs @voidxtora</i></b>\n"
             f"<blockquote expandable><b>Rᴇᴀsᴏɴ:</b> {e}</blockquote>"
         )
 
@@ -213,7 +213,7 @@ async def start_command(client: Client, message: Message):
     user_id = message.from_user.id
     
     # Add user to database
-    await Seishiro.add_user(user_id, message)
+    await CosmicBotz.add_user(user_id, message)
     
     rows = [
         [

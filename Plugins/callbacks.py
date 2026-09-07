@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from config import *
-from Database.database import Seishiro
+from Database.database import CosmicBotz
 
 logger = logging.getLogger(__name__)
 # If you need user_sessions: uncomment and adjust path
@@ -85,7 +85,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
                 return
 
             # Save selected mode
-            await Seishiro.set_sequence_mode(user_id, mode_key)
+            await CosmicBotz.set_sequence_mode(user_id, mode_key)
 
             # Optional: update active session if available
             try:
@@ -209,7 +209,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
             cid = int(data.split("_")[2])
             try:
                 chat = await client.get_chat(cid)
-                mode = await Seishiro.get_channel_mode(cid)
+                mode = await CosmicBotz.get_channel_mode(cid)
                 status = "ON" if mode == "on" else "OFF"
                 new_mode = "off" if mode == "on" else "on"
                 buttons = [
@@ -230,7 +230,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
             action = parts[1]
             mode = "on" if action == "on" else "off"
 
-            await Seishiro.set_channel_mode(cid, mode)
+            await CosmicBotz.set_channel_mode(cid, mode)
             await callback_query.answer(f"Force-Sub set to {'ON' if mode == 'on' else 'OFF'}")
 
             chat = await client.get_chat(cid)
@@ -247,12 +247,12 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
             )
 
         elif data == "fsub_back":
-            channels = await Seishiro.show_channels()
+            channels = await CosmicBotz.show_channels()
             buttons = []
             for cid in channels:
                 try:
                     chat = await client.get_chat(cid)
-                    mode = await Seishiro.get_channel_mode(cid)
+                    mode = await CosmicBotz.get_channel_mode(cid)
                     status = "✅" if mode == "on" else "❌"
                     buttons.append([InlineKeyboardButton(f"{status} {chat.title}", callback_data=f"rfs_ch_{cid}")])
                 except Exception:
