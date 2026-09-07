@@ -3,11 +3,12 @@ import re
 import time
 import asyncio
 import logging
+from datetime import datetime
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import FloodWait, MessageNotModified
-from pyrogram.enums import ParseMode
+from pyrogram.enums import ParseMode, ChatAction
 
 from config import *
 from Plugins.callbacks import MODES, get_mode_keyboard
@@ -21,7 +22,7 @@ pending_notifications = {}  # User debounce timers
 
 # Ensure commands are strictly ignored by text collector
 EXCLUDED_COMMANDS = [
-    "ssequence", "esequence", "mode", "cancel",
+    "ssequence", "esequence", "mode", "cancel", "settings",
     "add_dump", "rem_dump", "dump_info", "leaderboard",
     "start", "help", "about",
     "add_admin", "deladmin", "admins",
@@ -29,6 +30,11 @@ EXCLUDED_COMMANDS = [
     "broadcast", "stats", "status",
     "fsub_mode", "addchnl", "delchnl", "listchnl",
 ]
+
+# Modes where files are grouped by (season, episode) so episode
+# separators / stickers make sense. "All" additionally gets the
+# "Episode XX" text label.
+EPISODE_GROUPED_MODES = {"All", "AllSQE", "Episode"}
 
 # ==================== FLOODWAIT HANDLER ====================
 
@@ -44,6 +50,52 @@ async def handle_floodwait(func, *args, **kwargs):
         except Exception as e:
             logger.error(f"Error in operation: {e}")
             raise e
+
+# ==================== SHARED DUMP CHANNEL VERIFICATION ====================
+
+async def verify_and_set_dump_channel(client, user_id, raw_target):
+    """
+    Validates and saves a dump channel for a user.
+    Used by both /add_dump and the /settings panel.
+    Returns (success: bool, message: str, channel_id: int|None)
+    """
+    try:
+        if raw_target.startswith("-100") or raw_target.startswith("-"):
+            channel_id = int(raw_target)
+        elif raw_target.isdigit():
+            channel_id = int(f"-100{raw_target}")
+        else:
+            target_username = raw_target if raw_target.startswith("@") else f"@{raw_target}"
+            chat = await client.get_chat(target_username)
+            channel_id = chat.id
+
+        if channel_id > 0:
+            return False, "❌ Cannot set a private user chat as dump channel. Use a valid channel ID or @username.", None
+
+        test_msg = await client.send_message(
+            chat_id=channel_id,
+            text="⚙️ <i>Testing dump channel connection...</i>",
+            parse_mode=ParseMode.HTML
+        )
+        await asyncio.sleep(1)
+        await test_msg.delete()
+
+    except Exception as e:
+        logger.error(f"Dump verification failed for {user_id}: {e}")
+        return False, (
+            f"❌ <b>Cannot connect to channel.</b>\n\n"
+            f"<b>Please check:</b>\n"
+            f"1. Is the bot added to the channel as an <b>Admin</b>?\n"
+            f"2. Does the bot have permission to <b>Post Messages</b>?\n"
+            f"3. Is the Channel ID or Username typed correctly?\n\n"
+            f"<code>Details: {str(e)}</code>"
+        ), None
+
+    await CosmicBotz.set_dump_channel(user_id, channel_id)
+    return True, (
+        f"✅ <b>Dump channel saved successfully!</b>\n"
+        f"Channel ID: <code>{channel_id}</code>"
+    ), channel_id
 
 # ==================== FILE PARSING & MISSING EPISODES ====================
 
@@ -114,43 +166,76 @@ def parse_and_sort_files(file_data, mode='All'):
 
 def find_missing_episodes(all_files):
     """
-    Groups files by Show -> Quality and finds gaps in episode numbers.
+    Groups files by Show -> Season -> Quality and finds gaps in episode numbers.
+    Grouping by season too (not just title+quality) prevents Season 2's episodes
+    from being treated as a continuation of Season 1's range, which previously
+    caused false "missing episode" reports across season boundaries.
     """
-    groups = {}  # { "Show Name": { "1080p": [1, 3, 4, 6] } }
+    groups = {}  # { (title, season): { "1080p": {1, 3, 4, 6} } }
 
     for file_info in all_files:
         if not file_info['is_series'] or file_info['episode'] == 0:
             continue
 
         title = file_info['show_title']
+        season = file_info['season']
         quality = file_info['quality']
         ep = file_info['episode']
 
-        if title not in groups:
-            groups[title] = {}
-        if quality not in groups[title]:
-            groups[title][quality] = set()
+        key = (title, season)
+        if key not in groups:
+            groups[key] = {}
+        if quality not in groups[key]:
+            groups[key][quality] = set()
 
-        groups[title][quality].add(ep)
+        groups[key][quality].add(ep)
 
     missing_report = []
 
-    for title, qualities in groups.items():
-        show_lines = []
+    for (title, season), qualities in sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1])):
+        episode_lines = []
+        quality_lines = []
+
+        # --- Missing episode numbers: gaps within each quality's own range ---
         for quality, ep_set in qualities.items():
             if not ep_set:
                 continue
             sorted_eps = sorted(list(ep_set))
             min_ep, max_ep = sorted_eps[0], sorted_eps[-1]
             full_range = set(range(min_ep, max_ep + 1))
-            missing = sorted(list(full_range - ep_set))
+            missing_eps = sorted(list(full_range - ep_set))
 
-            if missing:
-                missing_str = ", ".join(str(e) for e in missing)
-                show_lines.append(f"  - {quality}: Ep {missing_str}")
+            if missing_eps:
+                missing_str = ", ".join(str(e) for e in missing_eps)
+                episode_lines.append(f"  - {quality}: Ep {missing_str}")
+
+        # --- Missing quality: for each episode that exists, which qualities
+        # it's missing compared to the other qualities available for this show/season ---
+        available_qualities = sorted(qualities.keys(), key=lambda q: QUALITY_ORDER.get(q.lower(), 7))
+
+        if len(available_qualities) > 1:
+            episode_to_have = {}
+            for quality, ep_set in qualities.items():
+                for ep in ep_set:
+                    episode_to_have.setdefault(ep, set()).add(quality)
+
+            for ep in sorted(episode_to_have.keys()):
+                have = episode_to_have[ep]
+                missing_q = [q for q in available_qualities if q not in have]
+                if missing_q:
+                    quality_lines.append(f"  - Ep {ep:02d}: missing {', '.join(missing_q)}")
+
+        show_lines = []
+        if episode_lines:
+            show_lines.append("  <i>Missing Episodes:</i>")
+            show_lines.extend(episode_lines)
+        if quality_lines:
+            show_lines.append("  <i>Missing Quality:</i>")
+            show_lines.extend(quality_lines)
 
         if show_lines:
-            missing_report.append(f"• {title}:\n" + "\n".join(show_lines))
+            season_label = f"S{season:02d}" if season else "Sxx"
+            missing_report.append(f"• {title} [{season_label}]:\n" + "\n".join(show_lines))
 
     return "\n".join(missing_report) if missing_report else None
 
@@ -214,6 +299,18 @@ async def collect_files(client: Client, message: Message):
 
         if added_this_time == 0:
             return
+
+        # Give a lightweight "bot is alive" signal without sending an actual
+        # message — this is a status ping (shows as "sending file..." /
+        # "typing..." near the input box), not a chat message, so it doesn't
+        # break the quiet batching the debounced notification relies on.
+        try:
+            if message.document or message.video or message.audio:
+                await message.reply_chat_action(ChatAction.UPLOAD_DOCUMENT)
+            else:
+                await message.reply_chat_action(ChatAction.TYPING)
+        except Exception as ca_err:
+            logger.debug(f"chat_action failed (non-critical): {ca_err}")
 
         current_total = len(files)
 
@@ -336,6 +433,7 @@ async def end_cmd(client: Client, message: Message):
 
         mode_key = await CosmicBotz.get_sequence_mode(user_id) or "All"
         dump_channel = await CosmicBotz.get_dump_channel(user_id)
+        episode_sticker = await CosmicBotz.get_episode_sticker(user_id)
 
         series, non_series = parse_and_sort_files(session['files'], mode_key)
         total_files = len(series) + len(non_series)
@@ -353,11 +451,43 @@ async def end_cmd(client: Client, message: Message):
         sent_count = 0
         failed_files = []
 
+        # Tracks the (season, episode) of the currently-open group so we
+        # know when a new episode starts / the previous one has ended.
+        last_episode_key = None
+        uses_episode_grouping = mode_key in EPISODE_GROUPED_MODES
+
         for file_info in all_sorted_files:
             try:
                 file_id = file_info.get('file_id')
                 filename = file_info.get('filename', 'Unknown')
                 file_format = file_info.get('format')
+                is_series = file_info.get('is_series')
+                season = file_info.get('season')
+                episode = file_info.get('episode')
+
+                if uses_episode_grouping and is_series and episode:
+                    current_key = (season, episode)
+
+                    if current_key != last_episode_key:
+                        # Episode boundary reached (including the very first one).
+                        if last_episode_key is not None and episode_sticker:
+                            # Sticker marks the end of the previous episode's group.
+                            try:
+                                await handle_floodwait(
+                                    client.send_sticker, chat_id=target_chat, sticker=episode_sticker
+                                )
+                            except Exception as ep_st_err:
+                                logger.error(f"Failed to send episode sticker: {ep_st_err}")
+
+                        if mode_key == "All":
+                            await handle_floodwait(
+                                client.send_message,
+                                chat_id=target_chat,
+                                text=f"📌 <b>Episode {episode:02d}</b>",
+                                parse_mode=ParseMode.HTML
+                            )
+
+                        last_episode_key = current_key
 
                 if file_id and file_format in ['document', 'video', 'audio']:
                     if file_format == 'document':
@@ -375,6 +505,13 @@ async def end_cmd(client: Client, message: Message):
                 logger.error(f"Failed to send file {filename}: {file_error}")
                 failed_files.append(filename)
                 continue
+
+        # Close out the final episode group with the separator sticker too.
+        if uses_episode_grouping and last_episode_key is not None and episode_sticker:
+            try:
+                await handle_floodwait(client.send_sticker, chat_id=target_chat, sticker=episode_sticker)
+            except Exception as ep_st_err:
+                logger.error(f"Failed to send final episode sticker: {ep_st_err}")
 
         elapsed_sec = int(time.time() - start_time)
         time_taken_str = time.strftime('%H:%M:%S', time.gmtime(elapsed_sec))
@@ -401,7 +538,7 @@ async def end_cmd(client: Client, message: Message):
         if missing_report:
             completion_text += f"\nMɪꜱꜱɪɴɢ Eᴘɪꜱᴏᴅᴇꜱ:\n{missing_report}"
 
-        await handle_floodwait(message.reply_text, completion_text)
+        await handle_floodwait(message.reply_text, completion_text, parse_mode=ParseMode.HTML)
 
         # Update stats
         await CosmicBotz.col.update_one(
@@ -469,55 +606,12 @@ async def add_dump_cmd(client: Client, message: Message):
 
         raw_target = message.command[1].strip()
 
-        try:
-            if raw_target.startswith("-100") or raw_target.startswith("-"):
-                channel_id = int(raw_target)
-            elif raw_target.isdigit():
-                channel_id = int(f"-100{raw_target}")
-            else:
-                target_username = raw_target if raw_target.startswith("@") else f"@{raw_target}"
-                chat = await client.get_chat(target_username)
-                channel_id = chat.id
+        success, msg, channel_id = await verify_and_set_dump_channel(client, user_id, raw_target)
 
-            if channel_id > 0:
-                await handle_floodwait(
-                    message.reply_text,
-                    "❌ Cannot set a private user chat as dump channel. Use a valid channel ID or @username.",
-                    parse_mode=ParseMode.HTML
-                )
-                return
+        if success:
+            msg += "\n\nAll future sequence output will be sent there automatically."
 
-            test_msg = await client.send_message(
-                chat_id=channel_id,
-                text="⚙️ <i>Testing dump channel connection...</i>",
-                parse_mode=ParseMode.HTML
-            )
-            await asyncio.sleep(1)
-            await test_msg.delete()
-
-        except Exception as e:
-            logger.error(f"Dump verification failed for {user_id}: {e}")
-            await handle_floodwait(
-                message.reply_text,
-                f"❌ <b>Cannot connect to channel.</b>\n\n"
-                f"<b>Please check:</b>\n"
-                f"1. Is the bot added to the channel as an <b>Admin</b>?\n"
-                f"2. Does the bot have permission to <b>Post Messages</b>?\n"
-                f"3. Is the Channel ID or Username typed correctly?\n\n"
-                f"<code>Details: {str(e)}</code>",
-                parse_mode=ParseMode.HTML
-            )
-            return
-
-        await CosmicBotz.set_dump_channel(user_id, channel_id)
-
-        await handle_floodwait(
-            message.reply_text,
-            f"✅ <b>Dump channel saved successfully!</b>\n"
-            f"Channel ID: <code>{channel_id}</code>\n\n"
-            f"All future sequence output will be sent there automatically.",
-            parse_mode=ParseMode.HTML
-        )
+        await handle_floodwait(message.reply_text, msg, parse_mode=ParseMode.HTML)
 
     except Exception as e:
         logger.error(f"Error in add_dump: {e}")

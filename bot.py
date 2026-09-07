@@ -56,6 +56,7 @@ class Bot(Client):
                 BotCommand("esequence", "ᴇɴᴅ sᴇǫᴜᴇɴᴄɪɴɢ ᴀɴᴅ sᴇɴᴅ"),
                 BotCommand("mode", "ᴄʜᴀɴɢᴇ sᴏʀᴛɪɴɢ ᴍᴏᴅᴇ"),
                 BotCommand("cancel", "ᴄᴀɴᴄᴇʟ ᴄᴜʀʀᴇɴᴛ sᴇǫᴜᴇɴᴄɪɴɢ"),
+                BotCommand("settings", "ᴍᴀɴᴀɢᴇ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ & sᴛɪᴄᴋᴇʀ"),
                 BotCommand("add_dump", "sᴇᴛ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ"),
                 BotCommand("rem_dump", "ʀᴇᴍᴏᴠᴇ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ"),
                 BotCommand("dump_info", "ᴄʜᴇᴄᴋ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ ɪɴꜰᴏ"),

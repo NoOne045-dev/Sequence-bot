@@ -137,6 +137,53 @@ class Master:
             logging.error(f"Error removing dump_channel for {user_id}: {e}")
             return False
 
+    # ==================== EPISODE STICKER (Per User) ====================
+
+    async def get_episode_sticker(self, user_id: int) -> Optional[str]:
+        """Get user's saved episode-separator sticker file_id. Returns str or None."""
+        try:
+            doc = await self.user_data.find_one({"_id": int(user_id)}, {"episode_sticker": 1})
+            if doc and doc.get("episode_sticker"):
+                return doc["episode_sticker"]
+            return None
+        except Exception as e:
+            logging.error(f"Error getting episode_sticker for {user_id}: {e}")
+            return None
+
+    async def set_episode_sticker(self, user_id: int, sticker_id: str) -> bool:
+        """Save user's episode-separator sticker."""
+        try:
+            await self.user_data.update_one(
+                {"_id": int(user_id)},
+                {
+                    "$set": {
+                        "episode_sticker": sticker_id,
+                        "episode_sticker_updated_at": datetime.utcnow()
+                    }
+                },
+                upsert=True
+            )
+            logging.info(f"Episode sticker set for {user_id}")
+            return True
+        except Exception as e:
+            logging.error(f"Error setting episode_sticker for {user_id}: {e}")
+            return False
+
+    async def remove_episode_sticker(self, user_id: int) -> bool:
+        """Remove user's saved episode-separator sticker."""
+        try:
+            result = await self.user_data.update_one(
+                {"_id": int(user_id)},
+                {"$unset": {"episode_sticker": "", "episode_sticker_updated_at": ""}}
+            )
+            if result.modified_count > 0:
+                logging.info(f"Episode sticker removed for user {user_id}")
+                return True
+            return False
+        except Exception as e:
+            logging.error(f"Error removing episode_sticker for {user_id}: {e}")
+            return False
+
     # ==================== SEQUENCE MODE (Sorting Preference) ====================
 
     async def get_sequence_mode(self, user_id: int) -> str:

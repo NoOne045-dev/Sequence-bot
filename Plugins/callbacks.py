@@ -1,4 +1,4 @@
-from pyrogram import Client
+from pyrogram import Client, ContinuePropagation
 from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
@@ -74,6 +74,11 @@ def get_mode_keyboard(current_mode: str) -> InlineKeyboardMarkup:
 async def settings_callback(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     data = callback_query.data
+
+    # Settings-panel callbacks (dump channel / episode sticker) are handled
+    # by their own dedicated handler in Plugins/settings.py.
+    if data.startswith("stg_"):
+        raise ContinuePropagation
 
     try:
         # ─── Sorting Mode Callbacks ───────────────────────────────
