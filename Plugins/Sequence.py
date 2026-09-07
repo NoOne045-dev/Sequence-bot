@@ -1,8 +1,8 @@
+import os
 import re
 import time
 import asyncio
 import logging
-from datetime import datetime
 
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
@@ -13,17 +13,6 @@ from config import *
 from Plugins.callbacks import MODES, get_mode_keyboard
 from Database.database import Seishiro
 from Plugins.start import *
-
-# Uptime import fallback
-try:
-    from bot import BOT_START_TIME, get_readable_time
-except ImportError:
-    BOT_START_TIME = time.time()
-    def get_readable_time(seconds: int) -> str:
-        m, s = divmod(seconds, 60)
-        h, m = divmod(m, 60)
-        d, h = divmod(h, 24)
-        return f"{d}d {h}h {m}m {s}s"
 
 logger = logging.getLogger(__name__)
 
@@ -596,39 +585,6 @@ async def dump_info_cmd(client: Client, message: Message):
     except Exception as e:
         logger.error(f"Error in dump_info: {e}")
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
-
-
-# ==================== STATS & STATUS (HIGH PRIORITY) ====================
-
-@Client.on_message(filters.command(["stats", "status"]) & filters.private, group=-1)
-@check_ban
-@check_fsub
-async def stats_cmd(client: Client, message: Message):
-    try:
-        user_id = message.from_user.id
-
-        user_doc = await Seishiro.col.find_one({"_id": user_id})
-        user_count = user_doc.get("sequence_count", 0) if user_doc else 0
-        dump_channel = await Seishiro.get_dump_channel(user_id)
-        mode_key = await Seishiro.get_sequence_mode(user_id) or "All"
-        mode_name = MODES.get(mode_key, MODES["All"])["button"]
-
-        uptime_sec = int(time.time() - BOT_START_TIME)
-        uptime_str = get_readable_time(uptime_sec)
-
-        text = (
-            f"📊 <b>Bot & Account Status</b>\n\n"
-            f"⏱ <b>System Uptime:</b> <code>{uptime_str}</code>\n"
-            f"👤 <b>User ID:</b> <code>{user_id}</code>\n"
-            f"📁 <b>Files Sequenced:</b> <code>{user_count:,}</code>\n"
-            f"⚙️ <b>Active Mode:</b> <b>{mode_name}</b>\n"
-            f"📤 <b>Dump Channel:</b> <code>{dump_channel if dump_channel else 'Not Set'}</code>"
-        )
-
-        await message.reply_text(text, parse_mode=ParseMode.HTML)
-    except Exception as e:
-        logger.error(f"Error in stats command: {e}")
-        await message.reply_text("❌ Error fetching stats status.", parse_mode=ParseMode.HTML)
 
 
 # ==================== LEADERBOARD ====================
