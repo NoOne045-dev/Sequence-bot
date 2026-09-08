@@ -9,7 +9,7 @@ from datetime import datetime
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import FloodWait, MessageNotModified
-from pyrogram.enums import ParseMode, ChatAction
+from pyrogram.enums import ParseMode, ChatAction, ChatMemberStatus
 
 from config import *
 from Plugins.callbacks import MODES, get_mode_keyboard
@@ -24,7 +24,7 @@ pending_notifications = {}  # User debounce timers
 # Ensure commands are strictly ignored by text collector
 EXCLUDED_COMMANDS = [
     "ssequence", "esequence", "mode", "cancel", "settings",
-    "add_dump", "rem_dump", "dump_info", "leaderboard",
+    "add_dump", "rem_dump", "dump_info", "leaderboard", "mystats",
     "set_caption", "rem_caption", "caption_info",
     "start", "help", "about",
     "add_admin", "deladmin", "admins",
@@ -94,22 +94,61 @@ async def verify_and_set_dump_channel(client, user_id, raw_target):
         if channel_id > 0:
             return False, "❌ Cannot set a private user chat as dump channel. Use a valid channel ID or @username.", None
 
+    except Exception as e:
+        logger.error(f"Dump channel resolution failed for {user_id}: {e}")
+        return False, (
+            f"❌ <b>Could not find that channel.</b>\n\n<b>Please check:</b>\n"
+            f"1. Is the Channel ID or Username typed correctly?\n"
+            f"2. Is the bot a member of that channel at all?\n\n"
+            f"<code>Details: {str(e)}</code>"
+        ), None
+
+    # --- Auto-detect permissions before even attempting a test post ---
+    # Gives a specific, actionable reason instead of a generic failure.
+    try:
+        member = await client.get_chat_member(channel_id, "me")
+
+        if member.status not in (ChatMemberStatus.ADMINISTRATOR, ChatMemberStatus.OWNER):
+            return False, (
+                "❌ <b>I'm not an admin in that channel.</b>\n\n"
+                "Please promote me to admin with at least the "
+                "<b>Post Messages</b> permission, then try again."
+            ), None
+
+        privileges = getattr(member, 'privileges', None)
+        if member.status == ChatMemberStatus.ADMINISTRATOR and privileges and not privileges.can_post_messages:
+            return False, (
+                "❌ <b>I'm admin there, but missing 'Post Messages' permission.</b>\n\n"
+                "Please enable it for me in the channel's admin settings, then try again."
+            ), None
+
+    except Exception as perm_err:
+        # Can't pre-check (e.g. rare API quirk) — fall through to the direct
+        # test-post below, which will catch a real permission problem anyway.
+        logger.warning(f"Could not pre-check permissions for {channel_id}: {perm_err}")
+
+    # --- Live test: actually try posting ---
+    try:
         test_msg = await client.send_message(
             chat_id=channel_id,
             text="⚙️ <i>Testing dump channel connection...</i>",
             parse_mode=ParseMode.HTML
         )
         await asyncio.sleep(1)
-        await test_msg.delete()
+        try:
+            await test_msg.delete()
+        except Exception as del_err:
+            # Missing delete permission shouldn't block a working setup —
+            # posting is what actually matters for sequencing.
+            logger.warning(f"Could not delete test message in {channel_id} (non-critical): {del_err}")
 
     except Exception as e:
-        logger.error(f"Dump verification failed for {user_id}: {e}")
+        logger.error(f"Dump verification post failed for {user_id}: {e}")
         return False, (
-            f"❌ <b>Cannot connect to channel.</b>\n\n"
+            f"❌ <b>Cannot post to that channel.</b>\n\n"
             f"<b>Please check:</b>\n"
             f"1. Is the bot added to the channel as an <b>Admin</b>?\n"
-            f"2. Does the bot have permission to <b>Post Messages</b>?\n"
-            f"3. Is the Channel ID or Username typed correctly?\n\n"
+            f"2. Does the bot have permission to <b>Post Messages</b>?\n\n"
             f"<code>Details: {str(e)}</code>"
         ), None
 
@@ -259,6 +298,18 @@ def extract_file_info(filename, file_format, file_id=None, extra=None):
     return info
 
 
+def build_dedup_key(info):
+    """
+    A key that identifies 'the same file' within a sequence session for
+    duplicate detection — series files are matched by show+season+episode+
+    quality (so re-sending the same episode/quality is caught even under a
+    slightly different filename), non-series files are matched by filename.
+    """
+    if info['is_series']:
+        return ('series', info['show_title'].strip().lower(), info['season'], info['episode'], info['quality'].lower())
+    return ('file', info['filename'].strip().lower())
+
+
 def parse_and_sort_files(file_data, mode='All'):
     series, non_series = [], []
 
@@ -381,59 +432,88 @@ async def collect_files(client: Client, message: Message):
 
         session = user_sessions[user_id]
         files = session['files']
+        seen_keys = session.setdefault('seen_keys', set())
         added_this_time = 0
+        duplicates_this_time = 0
 
         if message.text and not message.text.startswith("/"):
             for line in filter(None, map(str.strip, message.text.splitlines())):
+                key = ('file', line.lower())
+                if key in seen_keys:
+                    duplicates_this_time += 1
+                    continue
+                seen_keys.add(key)
                 files.append({'filename': line, 'format': 'text'})
                 added_this_time += 1
 
         if message.document:
-            doc_thumb = message.document.thumbs[-1].file_id if message.document.thumbs else None
-            files.append({
-                'filename': message.document.file_name,
-                'format': 'document',
-                'file_id': message.document.file_id,
-                'thumb': doc_thumb,
-                'orig_caption': message.caption.html if message.caption else None
-            })
-            added_this_time += 1
+            filename = message.document.file_name
+            key = build_dedup_key(extract_file_info(filename, 'document'))
+            if key in seen_keys:
+                duplicates_this_time += 1
+            else:
+                seen_keys.add(key)
+                doc_thumb = message.document.thumbs[-1].file_id if message.document.thumbs else None
+                files.append({
+                    'filename': filename,
+                    'format': 'document',
+                    'file_id': message.document.file_id,
+                    'thumb': doc_thumb,
+                    'orig_caption': message.caption.html if message.caption else None
+                })
+                added_this_time += 1
 
         if message.video:
             filename = message.video.file_name or \
                        (message.caption if message.caption else f"video_{message.video.file_unique_id}.mp4")
-            vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
-            # 'cover' is Telegram's dedicated video-cover feature (distinct from
-            # the auto-generated thumbnail) — used by tools like CoverChangerBot.
-            # getattr with a default keeps this safe on pyrogram builds that
-            # don't expose it yet.
-            vid_cover_obj = getattr(message.video, 'cover', None)
-            vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
-            files.append({
-                'filename': filename,
-                'format': 'video',
-                'file_id': message.video.file_id,
-                'thumb': vid_thumb,
-                'cover': vid_cover,
-                'duration': message.video.duration,
-                'width': message.video.width,
-                'height': message.video.height,
-                'orig_caption': message.caption.html if message.caption else None
-            })
-            added_this_time += 1
+            key = build_dedup_key(extract_file_info(filename, 'video'))
+            if key in seen_keys:
+                duplicates_this_time += 1
+            else:
+                seen_keys.add(key)
+                vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
+                # 'cover' is Telegram's dedicated video-cover feature (distinct from
+                # the auto-generated thumbnail) — used by tools like CoverChangerBot.
+                # getattr with a default keeps this safe on pyrogram builds that
+                # don't expose it yet.
+                vid_cover_obj = getattr(message.video, 'cover', None)
+                vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
+                files.append({
+                    'filename': filename,
+                    'format': 'video',
+                    'file_id': message.video.file_id,
+                    'thumb': vid_thumb,
+                    'cover': vid_cover,
+                    'duration': message.video.duration,
+                    'width': message.video.width,
+                    'height': message.video.height,
+                    'orig_caption': message.caption.html if message.caption else None
+                })
+                added_this_time += 1
 
         if message.audio:
             filename = message.audio.file_name or f"audio_{message.audio.file_unique_id}"
-            aud_thumb = message.audio.thumbs[-1].file_id if getattr(message.audio, 'thumbs', None) else None
-            files.append({
-                'filename': filename,
-                'format': 'audio',
-                'file_id': message.audio.file_id,
-                'thumb': aud_thumb,
-                'duration': message.audio.duration,
-                'orig_caption': message.caption.html if message.caption else None
-            })
-            added_this_time += 1
+            key = build_dedup_key(extract_file_info(filename, 'audio'))
+            if key in seen_keys:
+                duplicates_this_time += 1
+            else:
+                seen_keys.add(key)
+                aud_thumb = message.audio.thumbs[-1].file_id if getattr(message.audio, 'thumbs', None) else None
+                files.append({
+                    'filename': filename,
+                    'format': 'audio',
+                    'file_id': message.audio.file_id,
+                    'thumb': aud_thumb,
+                    'duration': message.audio.duration,
+                    'orig_caption': message.caption.html if message.caption else None
+                })
+                added_this_time += 1
+
+        # Track duplicates for this whole session (shown once in the final
+        # completion summary alongside "Time Taken", instead of a separate
+        # message here — fewer messages during collection, and it also
+        # helps keep the file count down when sequencing 100+ files).
+        session['total_duplicates'] = session.get('total_duplicates', 0) + duplicates_this_time
 
         if added_this_time == 0:
             return
@@ -508,6 +588,8 @@ async def arrange_cmd(client: Client, message: Message):
         user_id = message.from_user.id
         user_sessions[user_id] = {
             'files': [],
+            'seen_keys': set(),
+            'total_duplicates': 0,
             'start_time': time.time()
         }
 
@@ -616,6 +698,7 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
             return
 
         start_time = session.get('start_time', time.time())
+        total_duplicates = session.get('total_duplicates', 0)
 
         if user_id in pending_notifications:
             task = pending_notifications[user_id].get('timer')
@@ -732,6 +815,7 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
             f"Fɪʟᴇꜱ Sᴏʀᴛᴇᴅ: {sent_count}/{total_files}\n"
             f"Mᴏᴅᴇ: {mode_display}\n"
             f"Tɪᴍᴇ Tᴀᴋᴇɴ: {time_taken_str}\n"
+            + (f"Dᴜᴘʟɪᴄᴀᴛᴇꜱ Sᴋɪᴘᴘᴇᴅ: {total_duplicates}\n" if total_duplicates else "")
         )
 
         missing_report = find_missing_episodes(all_sorted_files)
@@ -743,7 +827,11 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
         await CosmicBotz.col.update_one(
             {"_id": int(user_id)},
             {
-                "$inc": {"sequence_count": sent_count},
+                "$inc": {
+                    "sequence_count": sent_count,
+                    "batches_completed": 1,
+                    f"mode_usage.{mode_key}": 1
+                },
                 "$set": {
                     "mention": user_mention,
                     "last_activity_timestamp": datetime.now()
@@ -983,6 +1071,48 @@ async def caption_info_cmd(client: Client, message: Message):
         )
     except Exception as e:
         logger.error(f"Error in caption_info: {e}")
+        await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
+
+
+# ==================== PER-USER STATS ====================
+
+@Client.on_message(filters.command("mystats") & filters.private)
+@check_ban
+@check_fsub
+async def mystats_cmd(client: Client, message: Message):
+    try:
+        user_id = message.from_user.id
+        user_doc = await CosmicBotz.col.find_one({"_id": user_id}) or {}
+
+        total_files = user_doc.get("sequence_count", 0)
+        total_batches = user_doc.get("batches_completed", 0)
+        mode_usage = user_doc.get("mode_usage", {}) or {}
+        join_date = user_doc.get("join_date", "Unknown")
+        last_activity = user_doc.get("last_activity_timestamp")
+
+        if mode_usage:
+            fav_mode_key = max(mode_usage, key=mode_usage.get)
+            fav_mode = MODES.get(fav_mode_key, {}).get("button", fav_mode_key)
+        else:
+            fav_mode = "N/A"
+
+        last_active_str = (
+            last_activity.strftime("%d-%m-%Y %H:%M")
+            if isinstance(last_activity, datetime) else "N/A"
+        )
+
+        text = (
+            "<b>📊 Yᴏᴜʀ Sᴛᴀᴛs</b>\n\n"
+            f"📁 <b>Files Sequenced:</b> <code>{total_files:,}</code>\n"
+            f"📦 <b>Batches Completed:</b> <code>{total_batches:,}</code>\n"
+            f"⭐ <b>Favorite Mode:</b> {fav_mode}\n"
+            f"📅 <b>Member Since:</b> <code>{join_date}</code>\n"
+            f"🕓 <b>Last Active:</b> <code>{last_active_str}</code>"
+        )
+
+        await handle_floodwait(message.reply_text, text, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        logger.error(f"Error in mystats: {e}")
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
 
 

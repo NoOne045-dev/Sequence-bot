@@ -64,6 +64,7 @@ class Bot(Client):
                 BotCommand("rem_dump", "ʀᴇᴍᴏᴠᴇ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ"),
                 BotCommand("dump_info", "ᴄʜᴇᴄᴋ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ ɪɴꜰᴏ"),
                 BotCommand("leaderboard", "sʜᴏᴡ ᴜsᴇʀ ʟᴇᴀᴅᴇʀʙᴏᴀʀᴅ"),
+                BotCommand("mystats", "ᴠɪᴇᴡ ʏᴏᴜʀ ᴘᴇʀsᴏɴᴀʟ sᴛᴀᴛs"),
                 BotCommand("add_admin", "ᴀᴅᴅ ᴀᴅᴍɪɴ (ᴏɴʟʏ ᴀᴅᴍɪɴs)"),
                 BotCommand("deladmin", "ʀᴇᴍᴏᴠᴇ ᴀᴅᴍɪɴ (ᴏɴʟʏ ᴀᴅᴍɪɴs)"),
                 BotCommand("admins", "ʟɪsᴛ ᴀᴅᴍɪɴs (ᴏɴʟʏ ᴀᴅᴍɪɴs)"),

@@ -32,17 +32,22 @@ async def build_settings_view(user_id):
         "in Episode-grouped modes (All, All [S→Q→E], Episode).</i>"
     )
 
-    rows = [[InlineKeyboardButton("📍 Set/Change Dump Channel", callback_data="stg_set_dump")]]
+    rows = []
+
+    dump_row = [InlineKeyboardButton("📍 Dump Channel", callback_data="stg_set_dump")]
     if dump_channel:
-        rows.append([InlineKeyboardButton("🗑️ Remove Dump Channel", callback_data="stg_rem_dump")])
+        dump_row.append(InlineKeyboardButton("🗑️", callback_data="stg_rem_dump"))
+    rows.append(dump_row)
 
-    rows.append([InlineKeyboardButton("🎟️ Set/Change Episode Sticker", callback_data="stg_set_sticker")])
+    sticker_row = [InlineKeyboardButton("🎟️ Sticker", callback_data="stg_set_sticker")]
     if sticker:
-        rows.append([InlineKeyboardButton("🗑️ Remove Episode Sticker", callback_data="stg_rem_sticker")])
+        sticker_row.append(InlineKeyboardButton("🗑️", callback_data="stg_rem_sticker"))
+    rows.append(sticker_row)
 
-    rows.append([InlineKeyboardButton("📝 Set/Change Caption", callback_data="stg_set_caption")])
+    caption_row = [InlineKeyboardButton("📝 Caption", callback_data="stg_set_caption")]
     if caption_template:
-        rows.append([InlineKeyboardButton("🗑️ Remove Caption", callback_data="stg_rem_caption")])
+        caption_row.append(InlineKeyboardButton("🗑️", callback_data="stg_rem_caption"))
+    rows.append(caption_row)
 
     rows.append([InlineKeyboardButton("Close ✖️", callback_data="stg_close")])
 
