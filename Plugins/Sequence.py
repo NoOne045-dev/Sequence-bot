@@ -203,54 +203,6 @@ def build_caption(template, file_info):
 
     return rendered.strip() if rendered and rendered.strip() else filename
 
-
-async def send_with_thumb(method, thumb=None, **kwargs):
-    """
-    Wraps a pyrogram send_* call. Tries to attach the original thumbnail
-    (preserves the video/document cover after re-sequencing); if attaching
-    the thumb ever fails for any reason, retries without it so the file
-    itself is never lost over a cosmetic thumbnail issue.
-    """
-    if thumb:
-        try:
-            return await handle_floodwait(method, thumb=thumb, **kwargs)
-        except Exception as e:
-            logger.warning(f"Sending with thumb failed, retrying without thumb: {e}")
-    return await handle_floodwait(method, **kwargs)
-
-
-async def send_video_preserving_cover(method, thumb=None, cover=None, **kwargs):
-    """
-    Video-specific sender. Telegram has two distinct concepts here:
-      - thumb:  the classic auto-generated preview image.
-      - cover:  a dedicated custom video cover (newer Bot API feature, the
-                one tools like CoverChangerBot set) — a different field.
-    Tries cover+thumb first, then thumb-only, then plain — so if the
-    installed pyrogram/kurigram version doesn't yet support the `cover`
-    kwarg (TypeError: unexpected keyword argument), it degrades gracefully
-    instead of losing the file.
-    """
-    attempts = []
-    if cover:
-        merged = dict(kwargs)
-        if thumb:
-            merged['thumb'] = thumb
-        merged['cover'] = cover
-        attempts.append(merged)
-    if thumb:
-        attempts.append({**kwargs, 'thumb': thumb})
-    attempts.append(dict(kwargs))
-
-    last_err = None
-    for call_kwargs in attempts:
-        try:
-            return await handle_floodwait(method, **call_kwargs)
-        except Exception as e:
-            logger.warning(f"send_video attempt failed, degrading and retrying: {e}")
-            last_err = e
-            continue
-    raise last_err
-
 # ==================== FILE PARSING & MISSING EPISODES ====================
 
 def clean_show_title(filename):
@@ -461,12 +413,12 @@ async def collect_files(client: Client, message: Message):
                 duplicates_this_time += 1
             else:
                 seen_keys.add(key)
-                doc_thumb = message.document.thumbs[-1].file_id if message.document.thumbs else None
                 files.append({
                     'filename': filename,
                     'format': 'document',
                     'file_id': message.document.file_id,
-                    'thumb': doc_thumb,
+                    'source_chat_id': message.chat.id,
+                    'source_message_id': message.id,
                     'orig_caption': message.caption.html if message.caption else None
                 })
                 added_this_time += 1
@@ -479,22 +431,12 @@ async def collect_files(client: Client, message: Message):
                 duplicates_this_time += 1
             else:
                 seen_keys.add(key)
-                vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
-                # 'cover' is Telegram's dedicated video-cover feature (distinct from
-                # the auto-generated thumbnail) — used by tools like CoverChangerBot.
-                # getattr with a default keeps this safe on pyrogram builds that
-                # don't expose it yet.
-                vid_cover_obj = getattr(message.video, 'cover', None)
-                vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
                 files.append({
                     'filename': filename,
                     'format': 'video',
                     'file_id': message.video.file_id,
-                    'thumb': vid_thumb,
-                    'cover': vid_cover,
-                    'duration': message.video.duration,
-                    'width': message.video.width,
-                    'height': message.video.height,
+                    'source_chat_id': message.chat.id,
+                    'source_message_id': message.id,
                     'orig_caption': message.caption.html if message.caption else None
                 })
                 added_this_time += 1
@@ -506,13 +448,12 @@ async def collect_files(client: Client, message: Message):
                 duplicates_this_time += 1
             else:
                 seen_keys.add(key)
-                aud_thumb = message.audio.thumbs[-1].file_id if getattr(message.audio, 'thumbs', None) else None
                 files.append({
                     'filename': filename,
                     'format': 'audio',
                     'file_id': message.audio.file_id,
-                    'thumb': aud_thumb,
-                    'duration': message.audio.duration,
+                    'source_chat_id': message.chat.id,
+                    'source_message_id': message.id,
                     'orig_caption': message.caption.html if message.caption else None
                 })
                 added_this_time += 1
@@ -765,40 +706,43 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
 
                         last_episode_key = current_key
 
-                if file_id and file_format in ['document', 'video', 'audio']:
+                source_chat_id = file_info.get('source_chat_id')
+                source_message_id = file_info.get('source_message_id')
+
+                if source_chat_id and source_message_id and file_format in ['document', 'video', 'audio']:
                     caption_text = build_caption(caption_template, file_info)
 
-                    # NOTE: resending by file_id reuses the SAME bytes already
-                    # on Telegram's servers — nothing is re-uploaded, so any
-                    # thumbnail/cover the original file already had (including
-                    # a properly ffmpeg-muxed cover) is preserved automatically
-                    # with zero extra parameters needed. Explicitly passing
-                    # thumb=/cover= here was a no-op at best (thumb is
-                    # upload-time-only metadata) and a silently-failing extra
-                    # API attempt at worst (cover expects a freshly uploaded
-                    # photo, not a reused file_id) — so it's removed rather
-                    # than kept as dead weight slowing down large batches.
+                    # copy_message asks Telegram's own servers to duplicate the
+                    # original message's media exactly — cover, thumbnail,
+                    # duration, dimensions, everything — with nothing re-
+                    # uploaded and nothing for us to guess or reattach. This
+                    # is the only way to guarantee the cover is never lost.
+                    await handle_floodwait(
+                        client.copy_message,
+                        chat_id=target_chat,
+                        from_chat_id=source_chat_id,
+                        message_id=source_message_id,
+                        caption=caption_text,
+                        parse_mode=ParseMode.HTML
+                    )
+                elif file_id and file_format in ['document', 'video', 'audio']:
+                    # Fallback for any older session data collected before this
+                    # source-tracking existed (no source_chat_id/message_id).
+                    caption_text = build_caption(caption_template, file_info)
                     if file_format == 'document':
                         await handle_floodwait(
-                            client.send_document,
-                            chat_id=target_chat, document=file_id, caption=caption_text,
-                            parse_mode=ParseMode.HTML
+                            client.send_document, chat_id=target_chat, document=file_id,
+                            caption=caption_text, parse_mode=ParseMode.HTML
                         )
                     elif file_format == 'video':
                         await handle_floodwait(
-                            client.send_video,
-                            chat_id=target_chat, video=file_id, caption=caption_text,
-                            parse_mode=ParseMode.HTML,
-                            duration=file_info.get('duration') or 0,
-                            width=file_info.get('width') or 0,
-                            height=file_info.get('height') or 0
+                            client.send_video, chat_id=target_chat, video=file_id,
+                            caption=caption_text, parse_mode=ParseMode.HTML
                         )
                     elif file_format == 'audio':
                         await handle_floodwait(
-                            client.send_audio,
-                            chat_id=target_chat, audio=file_id, caption=caption_text,
-                            parse_mode=ParseMode.HTML,
-                            duration=file_info.get('duration') or 0
+                            client.send_audio, chat_id=target_chat, audio=file_id,
+                            caption=caption_text, parse_mode=ParseMode.HTML
                         )
                 else:
                     await handle_floodwait(client.send_message, chat_id=target_chat, text=f"📄 {filename}")
