@@ -3,6 +3,7 @@ import re
 import time
 import asyncio
 import logging
+import html as html_lib
 from datetime import datetime
 
 from pyrogram import Client, filters
@@ -35,13 +36,22 @@ EXCLUDED_COMMANDS = [
 # Placeholders supported inside a user's caption template.
 CAPTION_PLACEHOLDER_HELP = (
     "<b>Placeholders you can use:</b>\n"
+    "<code>{caption}</code> — the file's original caption (with its formatting kept)\n"
     "<code>{filename}</code> — original file name\n"
     "<code>{show_title}</code> — cleaned show/movie title\n"
     "<code>{season}</code> — season number (e.g. 01)\n"
     "<code>{episode}</code> — episode number (e.g. 05)\n"
     "<code>{quality}</code> — quality tag (e.g. 720p)\n\n"
+    "HTML tags work too — <code>&lt;b&gt;</code>, <code>&lt;i&gt;</code>, "
+    "<code>&lt;blockquote&gt;</code>, <code>&lt;code&gt;</code> etc.\n\n"
+    "<b>Default (if you don't set one):</b> <code>{caption}</code> — keeps each "
+    "file's own original caption, falling back to its filename if it had none.\n\n"
     "<b>Example:</b>\n<code>🎬 {show_title} S{season}E{episode} [{quality}]</code>"
 )
+
+# Used when a user hasn't set a custom template — reuses the file's own
+# original caption (with its formatting), falling back to the filename.
+DEFAULT_CAPTION_TEMPLATE = "{caption}"
 
 # Modes where files are grouped by (season, episode) so episode
 # separators / stickers make sense. "All" additionally gets the
@@ -113,18 +123,24 @@ async def verify_and_set_dump_channel(client, user_id, raw_target):
 def build_caption(template, file_info):
     """
     Renders a user's caption template against a file's extracted info.
-    Falls back to the plain filename if no template is set, or if the
-    template references an unknown placeholder / fails to render.
+    HTML tags typed into the template (e.g. <b>, <i>, <blockquote>, <code>)
+    are passed through as-is — every send call uses parse_mode=ParseMode.HTML,
+    so they render normally, same as {caption}'s own preserved formatting.
+
+    Default behaviour (no template set) is DEFAULT_CAPTION_TEMPLATE, i.e.
+    just "{caption}" — reuse the file's own original caption. If the file
+    had no caption at all, falls back to the filename.
     """
     filename = file_info.get('filename', 'Unknown')
+    orig_caption = file_info.get('orig_caption') or ""
 
-    if not template:
-        return filename
+    effective_template = template or DEFAULT_CAPTION_TEMPLATE
 
     season = file_info.get('season') or 0
     episode = file_info.get('episode') or 0
 
     values = {
+        'caption': orig_caption,
         'filename': filename,
         'show_title': file_info.get('show_title', '') or filename,
         'season': f"{season:02d}" if season else "",
@@ -133,10 +149,12 @@ def build_caption(template, file_info):
     }
 
     try:
-        return template.format(**values)
+        rendered = effective_template.format(**values)
     except Exception as e:
-        logger.warning(f"Caption template render failed, falling back to filename: {e}")
-        return filename
+        logger.warning(f"Caption template render failed, falling back: {e}")
+        rendered = orig_caption
+
+    return rendered.strip() if rendered and rendered.strip() else filename
 
 
 async def send_with_thumb(method, thumb=None, **kwargs):
@@ -173,13 +191,13 @@ def extract_file_info(filename, file_format, file_id=None, extra=None):
 
     temp = re.sub(QUALITY_PATTERN, '', filename, flags=re.IGNORECASE) if quality_match else filename
 
-    season_match = re.search(SEASON_PATTERN, temp)
+    season_match = re.search(SEASON_PATTERN, temp, re.IGNORECASE)
     season = int(season_match.group(1)) if season_match else 0
 
-    episode_match = re.search(EPISODE_PATTERN, temp)
+    episode_match = re.search(EPISODE_PATTERN, temp, re.IGNORECASE)
     episode = int(episode_match.group(1)) if episode_match else 0
     if not episode_match:
-        nums = re.findall(r'\d{1,3}', temp)
+        nums = re.findall(r'\d{1,4}', temp)
         episode = int(nums[-1]) if nums else 0
 
     show_title = clean_show_title(filename)
@@ -340,7 +358,8 @@ async def collect_files(client: Client, message: Message):
                 'filename': message.document.file_name,
                 'format': 'document',
                 'file_id': message.document.file_id,
-                'thumb': doc_thumb
+                'thumb': doc_thumb,
+                'orig_caption': message.caption.html if message.caption else None
             })
             added_this_time += 1
 
@@ -355,7 +374,8 @@ async def collect_files(client: Client, message: Message):
                 'thumb': vid_thumb,
                 'duration': message.video.duration,
                 'width': message.video.width,
-                'height': message.video.height
+                'height': message.video.height,
+                'orig_caption': message.caption.html if message.caption else None
             })
             added_this_time += 1
 
@@ -367,7 +387,8 @@ async def collect_files(client: Client, message: Message):
                 'format': 'audio',
                 'file_id': message.audio.file_id,
                 'thumb': aud_thumb,
-                'duration': message.audio.duration
+                'duration': message.audio.duration,
+                'orig_caption': message.caption.html if message.caption else None
             })
             added_this_time += 1
 
@@ -407,10 +428,19 @@ async def collect_files(client: Client, message: Message):
                     f"Use <code>/esequence</code> when you're done"
                 )
 
+                quick_kb = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("⚙️ Mode", callback_data="nq_mode"),
+                        InlineKeyboardButton("🛠️ Settings", callback_data="nq_settings")
+                    ],
+                    [InlineKeyboardButton("✅ Sequence Now", callback_data="nq_end")]
+                ])
+
                 await handle_floodwait(
                     message.reply_text,
                     text,
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=quick_kb
                 )
 
             pending_notifications.pop(user_id, None)
@@ -454,47 +484,92 @@ async def arrange_cmd(client: Client, message: Message):
 
 # ==================== MODE COMMAND ====================
 
+async def get_mode_menu(user_id):
+    current = await CosmicBotz.get_sequence_mode(user_id) or "All"
+    current_name = MODES.get(current, MODES["All"])["button"]
+    kb = get_mode_keyboard(current)
+    text = (
+        f"<b><u>Sᴇʟᴇᴄᴛ Sᴏʀᴛɪɴɢ Mᴏᴅᴇ</u></b> (Current: {current_name})\n\n"
+        "<b>Available modes:</b>\n"
+        "• <b>Qᴜᴀʟɪᴛʏ</b>: Sort by quality only\n"
+        "• <b>Aʟʟ (S→E→Q)</b>: Season → Episode → Quality\n"
+        "• <b>Aʟʟ [S→Q→E]</b>: Season → Quality → Episode\n"
+        "• <b>Eᴘɪsᴏᴅᴇ</b>: Sort by episode number only\n"
+        "• <b>Sᴇᴀsᴏɴ</b>: Sort by season number only\n\n"
+        "<i>Choose your preferred order ↓</i>"
+    )
+    return text, kb
+
+
 @Client.on_message(filters.command("mode") & filters.private)
 @check_ban
 @check_fsub
 async def mode_cmd(client: Client, message: Message):
     try:
-        user_id = message.from_user.id
-        current = await CosmicBotz.get_sequence_mode(user_id) or "All"
-        current_name = MODES.get(current, MODES["All"])["button"]
-
-        kb = get_mode_keyboard(current)
-
-        await handle_floodwait(
-            message.reply_text,
-            f"<b><u>Sᴇʟᴇᴄᴛ Sᴏʀᴛɪɴɢ Mᴏᴅᴇ</u></b> (Current: {current_name})\n\n"
-            "<b>Available modes:</b>\n"
-            "• <b>Qᴜᴀʟɪᴛʏ</b>: Sort by quality only\n"
-            "• <b>Aʟʟ (S→E→Q)</b>: Season → Episode → Quality\n"
-            "• <b>Aʟʟ [S→Q→E]</b>: Season → Quality → Episode\n"
-            "• <b>Eᴘɪsᴏᴅᴇ</b>: Sort by episode number only\n"
-            "• <b>Sᴇᴀsᴏɴ</b>: Sort by season number only\n\n"
-            "<i>Choose your preferred order ↓</i>",
-            reply_markup=kb,
-            parse_mode=ParseMode.HTML
-        )
+        text, kb = await get_mode_menu(message.from_user.id)
+        await handle_floodwait(message.reply_text, text, reply_markup=kb, parse_mode=ParseMode.HTML)
     except Exception as e:
         logger.error(f"Error in mode command: {e}")
         await handle_floodwait(message.reply_text, "❌ Aɴ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ. Pʟᴇᴀsᴇ ᴛʀʏ ᴀɢᴀɪɴ.")
 
 
+# ==================== QUICK ACTIONS (buttons on file-added notification) ====================
+
+@Client.on_callback_query(filters.regex(r"^nq_"))
+async def quick_notification_callback(client: Client, cq):
+    user_id = cq.from_user.id
+    data = cq.data
+
+    try:
+        if data == "nq_mode":
+            await cq.answer()
+            text, kb = await get_mode_menu(user_id)
+            await handle_floodwait(
+                client.send_message, chat_id=cq.message.chat.id, text=text,
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+
+        elif data == "nq_settings":
+            await cq.answer()
+            from Plugins.settings import build_settings_view  # deferred: avoids circular import
+            text, kb = await build_settings_view(user_id)
+            await handle_floodwait(
+                client.send_message, chat_id=cq.message.chat.id, text=text,
+                reply_markup=kb, parse_mode=ParseMode.HTML
+            )
+
+        elif data == "nq_end":
+            await cq.answer("Starting sequence...")
+
+            async def notify(text, **kwargs):
+                return await handle_floodwait(client.send_message, chat_id=cq.message.chat.id, text=text, **kwargs)
+
+            await perform_esequence(client, user_id, cq.message.chat.id, cq.from_user.mention, notify)
+
+    except Exception as e:
+        logger.error(f"Error in quick_notification_callback (data={data!r}): {e}", exc_info=True)
+        try:
+            await cq.answer("An error occurred. Please try again.", show_alert=True)
+        except Exception:
+            pass
+
+
 # ==================== END SEQUENCE / SEND FILES ====================
 
-@Client.on_message(filters.command("esequence") & filters.private)
-@check_ban
-@check_fsub
-async def end_cmd(client: Client, message: Message):
+async def perform_esequence(client, user_id, chat_id, user_mention, notify):
+    """
+    Core /esequence logic, extracted so it can be triggered either by the
+    /esequence command or by the inline 'Sequence Now' button on the
+    file-added notification.
+
+    notify: async callable(text, **kwargs) that sends a text message to the
+    user's chat (already wraps handle_floodwait internally).
+    """
     try:
-        user_id = message.from_user.id
         session = user_sessions.get(user_id)
 
         if not session or not session.get('files'):
-            await handle_floodwait(message.reply_text, "Nᴏ ғɪʟᴇs ᴡᴇʀᴇ sᴇɴᴛ ғᴏʀ sᴇǫᴜᴇɴᴄᴇ")
+            await notify("Nᴏ ғɪʟᴇs ᴡᴇʀᴇ sᴇɴᴛ ғᴏʀ sᴇǫᴜᴇɴᴄᴇ")
             return
 
         start_time = session.get('start_time', time.time())
@@ -515,19 +590,13 @@ async def end_cmd(client: Client, message: Message):
         all_sorted_files = series + non_series
 
         is_dump_mode = bool(dump_channel)
-        target_chat = dump_channel if is_dump_mode else message.chat.id
+        target_chat = dump_channel if is_dump_mode else chat_id
 
-        status_msg = await handle_floodwait(
-            message.reply_text,
-            f"📤 Sᴇɴᴅɪɴɢ {total_files} ғɪʟᴇs ɪɴ sᴇǫᴜᴇɴᴄᴇ...",
-            parse_mode=ParseMode.HTML
-        )
+        await notify(f"📤 Sᴇɴᴅɪɴɢ {total_files} ғɪʟᴇs ɪɴ sᴇǫᴜᴇɴᴄᴇ...", parse_mode=ParseMode.HTML)
 
         sent_count = 0
         failed_files = []
 
-        # Tracks the (season, episode) of the currently-open group so we
-        # know when a new episode starts / the previous one has ended.
         last_episode_key = None
         uses_episode_grouping = mode_key in EPISODE_GROUPED_MODES
 
@@ -544,9 +613,7 @@ async def end_cmd(client: Client, message: Message):
                     current_key = (season, episode)
 
                     if current_key != last_episode_key:
-                        # Episode boundary reached (including the very first one).
                         if last_episode_key is not None and episode_sticker:
-                            # Sticker marks the end of the previous episode's group.
                             try:
                                 await handle_floodwait(
                                     client.send_sticker, chat_id=target_chat, sticker=episode_sticker
@@ -600,7 +667,6 @@ async def end_cmd(client: Client, message: Message):
                 failed_files.append(filename)
                 continue
 
-        # Close out the final episode group with the separator sticker too.
         if uses_episode_grouping and last_episode_key is not None and episode_sticker:
             try:
                 await handle_floodwait(client.send_sticker, chat_id=target_chat, sticker=episode_sticker)
@@ -610,37 +676,33 @@ async def end_cmd(client: Client, message: Message):
         elapsed_sec = int(time.time() - start_time)
         time_taken_str = time.strftime('%H:%M:%S', time.gmtime(elapsed_sec))
 
-        # Send completion sticker if defined
         sticker_id = getattr(globals().get('config'), 'COMPLETION_STICKER', None) or os.environ.get("COMPLETION_STICKER")
         if sticker_id:
             try:
-                await client.send_sticker(chat_id=message.chat.id, sticker=sticker_id)
+                await client.send_sticker(chat_id=chat_id, sticker=sticker_id)
             except Exception as st_err:
                 logger.error(f"Failed to send sticker: {st_err}")
 
-        # Format final completion text
         mode_display = MODES.get(mode_key, MODES["All"])["button"].lower()
-        
+
         completion_text = (
             f"Fɪʟᴇꜱ Sᴏʀᴛᴇᴅ: {sent_count}/{total_files}\n"
             f"Mᴏᴅᴇ: {mode_display}\n"
             f"Tɪᴍᴇ Tᴀᴋᴇɴ: {time_taken_str}\n"
         )
 
-        # Check missing episodes
         missing_report = find_missing_episodes(all_sorted_files)
         if missing_report:
             completion_text += f"\nMɪꜱꜱɪɴɢ Eᴘɪꜱᴏᴅᴇꜱ:\n{missing_report}"
 
-        await handle_floodwait(message.reply_text, completion_text, parse_mode=ParseMode.HTML)
+        await notify(completion_text, parse_mode=ParseMode.HTML)
 
-        # Update stats
         await CosmicBotz.col.update_one(
             {"_id": int(user_id)},
             {
                 "$inc": {"sequence_count": sent_count},
                 "$set": {
-                    "mention": message.from_user.mention,
+                    "mention": user_mention,
                     "last_activity_timestamp": datetime.now()
                 }
             },
@@ -651,8 +713,20 @@ async def end_cmd(client: Client, message: Message):
             del user_sessions[user_id]
 
     except Exception as e:
-        logger.error(f"Error in esequence command: {e}")
-        await handle_floodwait(message.reply_text, f"❌ Aɴ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ: {str(e)}")
+        logger.error(f"Error in perform_esequence: {e}")
+        await notify(f"❌ Aɴ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ: {str(e)}")
+
+
+@Client.on_message(filters.command("esequence") & filters.private)
+@check_ban
+@check_fsub
+async def end_cmd(client: Client, message: Message):
+    async def notify(text, **kwargs):
+        return await handle_floodwait(message.reply_text, text, **kwargs)
+
+    await perform_esequence(
+        client, message.from_user.id, message.chat.id, message.from_user.mention, notify
+    )
 
 
 # ==================== CANCEL ====================
@@ -797,12 +871,13 @@ async def set_caption_cmd(client: Client, message: Message):
 
         preview = build_caption(template, {
             'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
-            'season': 1, 'episode': 5, 'quality': '720P'
+            'season': 1, 'episode': 5, 'quality': '720P',
+            'orig_caption': '🎬 <b>Show Name</b> Episode 5'
         })
 
         await handle_floodwait(
             message.reply_text,
-            f"✅ <b>Caption template saved!</b>\n\n<b>Preview:</b>\n<code>{preview}</code>",
+            f"✅ <b>Caption template saved!</b>\n\n<b>Preview:</b>\n{preview}",
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
@@ -852,13 +927,14 @@ async def caption_info_cmd(client: Client, message: Message):
 
         preview = build_caption(template, {
             'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
-            'season': 1, 'episode': 5, 'quality': '720P'
+            'season': 1, 'episode': 5, 'quality': '720P',
+            'orig_caption': '🎬 <b>Show Name</b> Episode 5'
         })
 
         await handle_floodwait(
             message.reply_text,
-            f"📝 <b>Your Caption Template:</b>\n<code>{template}</code>\n\n"
-            f"<b>Preview:</b>\n<code>{preview}</code>\n\n"
+            f"📝 <b>Your Caption Template:</b>\n<code>{html_lib.escape(template)}</code>\n\n"
+            f"<b>Preview:</b>\n{preview}\n\n"
             "Use /rem_caption to remove it.",
             parse_mode=ParseMode.HTML
         )

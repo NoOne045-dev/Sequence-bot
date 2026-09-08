@@ -75,9 +75,10 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     data = callback_query.data
 
-    # Settings-panel callbacks (dump channel / episode sticker) are handled
-    # by their own dedicated handler in Plugins/settings.py.
-    if data.startswith("stg_"):
+    # Settings-panel callbacks (dump channel / episode sticker / caption) and
+    # the quick-action buttons on the file-added notification are handled by
+    # their own dedicated handlers elsewhere.
+    if data.startswith("stg_") or data.startswith("nq_"):
         raise ContinuePropagation
 
     try:

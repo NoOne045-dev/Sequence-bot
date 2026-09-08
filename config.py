@@ -1,5 +1,4 @@
 import os
-from os import environ
 
 
 TG_BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -23,8 +22,18 @@ TG_BOT_WORKERS = 10000
 FSUB_LINK_EXPIRY = 300
 DATABASE_CHANNEL = int(os.environ.get("DATABASE_CHANNEL", ""))
 LOG_FILE_NAME = "links-sharingbot.txt"
-SEASON_PATTERN = r'[Ss](\d{1,2})'
-EPISODE_PATTERN = r'[Ee][Pp]?(\d{1,3})'
+
+# ---------------------------------------------------------------------------
+# Season/Episode regex — matches "S01"/"Season 01", and "E07"/"EP07"/"EP-07"/
+# "Episode 07"/"EP 1177" etc. Optional separator ( -._ or space) between the
+# marker and the digits, digits capped at 4 (not 3) so large episode numbers
+# like "1177" aren't truncated by the matcher, and a trailing word boundary
+# so it doesn't bleed into an adjacent alphanumeric token.
+# NOTE: always use re.IGNORECASE when applying these (they rely on the flag,
+# not character classes, for case handling).
+# ---------------------------------------------------------------------------
+SEASON_PATTERN = r'(?:season|s)[\s\-\._]?(\d{1,2})\b'
+EPISODE_PATTERN = r'(?:episode|ep|e)[\s\-\._]?(\d{1,4})\b'
 QUALITY_PATTERN = r'(480p|720p|1080p|HDRip|2k|4k)'
 
 TEMP_DIR = "temp_files"
