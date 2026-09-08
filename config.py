@@ -1,4 +1,5 @@
 import os
+from os import environ
 
 
 TG_BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -35,6 +36,19 @@ LOG_FILE_NAME = "links-sharingbot.txt"
 SEASON_PATTERN = r'(?:season|s)[\s\-\._]?(\d{1,2})\b'
 EPISODE_PATTERN = r'(?:episode|ep|e)[\s\-\._]?(\d{1,4})\b'
 QUALITY_PATTERN = r'(480p|720p|1080p|HDRip|2k|4k)'
+
+# Canonical display casing — QUALITY_PATTERN matches case-insensitively, so a
+# filename with "720P" or "HDRIP" would otherwise get displayed exactly as
+# typed. This maps the matched text (lowercased) back to its correct display
+# form regardless of how it was cased in the original filename.
+QUALITY_CANONICAL = {
+    '480p': '480p',
+    '720p': '720p',
+    '1080p': '1080p',
+    'hdrip': 'HDRip',
+    '2k': '2k',
+    '4k': '4k',
+}
 
 TEMP_DIR = "temp_files"
 if not os.path.exists(TEMP_DIR):

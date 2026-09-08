@@ -163,7 +163,7 @@ async def settings_text_capture(client: Client, message: Message):
         await CosmicBotz.set_caption_template(user_id, template)
         preview = build_caption(template, {
             'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
-            'season': 1, 'episode': 5, 'quality': '720P',
+            'season': 1, 'episode': 5, 'quality': '720p',
             'orig_caption': '🎬 <b>Show Name</b> Episode 5'
         })
         msg = f"✅ Caption template saved!\n\nPreview:\n{preview}"

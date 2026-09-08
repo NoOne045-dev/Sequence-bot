@@ -171,6 +171,39 @@ async def send_with_thumb(method, thumb=None, **kwargs):
             logger.warning(f"Sending with thumb failed, retrying without thumb: {e}")
     return await handle_floodwait(method, **kwargs)
 
+
+async def send_video_preserving_cover(method, thumb=None, cover=None, **kwargs):
+    """
+    Video-specific sender. Telegram has two distinct concepts here:
+      - thumb:  the classic auto-generated preview image.
+      - cover:  a dedicated custom video cover (newer Bot API feature, the
+                one tools like CoverChangerBot set) — a different field.
+    Tries cover+thumb first, then thumb-only, then plain — so if the
+    installed pyrogram/kurigram version doesn't yet support the `cover`
+    kwarg (TypeError: unexpected keyword argument), it degrades gracefully
+    instead of losing the file.
+    """
+    attempts = []
+    if cover:
+        merged = dict(kwargs)
+        if thumb:
+            merged['thumb'] = thumb
+        merged['cover'] = cover
+        attempts.append(merged)
+    if thumb:
+        attempts.append({**kwargs, 'thumb': thumb})
+    attempts.append(dict(kwargs))
+
+    last_err = None
+    for call_kwargs in attempts:
+        try:
+            return await handle_floodwait(method, **call_kwargs)
+        except Exception as e:
+            logger.warning(f"send_video attempt failed, degrading and retrying: {e}")
+            last_err = e
+            continue
+    raise last_err
+
 # ==================== FILE PARSING & MISSING EPISODES ====================
 
 def clean_show_title(filename):
@@ -187,7 +220,11 @@ def clean_show_title(filename):
 
 def extract_file_info(filename, file_format, file_id=None, extra=None):
     quality_match = re.search(QUALITY_PATTERN, filename, re.IGNORECASE)
-    quality = quality_match.group(1).upper() if quality_match else 'Unknown'
+    if quality_match:
+        raw_quality = quality_match.group(1)
+        quality = QUALITY_CANONICAL.get(raw_quality.lower(), raw_quality)
+    else:
+        quality = 'Unknown'
 
     temp = re.sub(QUALITY_PATTERN, '', filename, flags=re.IGNORECASE) if quality_match else filename
 
@@ -248,12 +285,16 @@ def parse_and_sort_files(file_data, mode='All'):
 
 def find_missing_episodes(all_files):
     """
-    Groups files by Show -> Season -> Quality and finds gaps in episode numbers.
-    Grouping by season too (not just title+quality) prevents Season 2's episodes
-    from being treated as a continuation of Season 1's range, which previously
-    caused false "missing episode" reports across season boundaries.
+    Groups files by Show -> Season, then:
+      1. Missing Episodes  — takes the overall episode range for that season
+         (lowest episode number to highest, across ALL qualities combined —
+         e.g. if you have Ep 1 and Ep 7, the range checked is 1-7) and lists
+         any episode number in that range that doesn't exist in ANY quality.
+      2. Missing Quality    — for every episode that DOES exist, compares it
+         against every quality seen anywhere else in that season and lists
+         which quality variants that specific episode is missing.
     """
-    groups = {}  # { (title, season): { "1080p": {1, 3, 4, 6} } }
+    groups = {}  # { (title, season): { "720p": {1, 3, 4, 6} } }
 
     for file_info in all_files:
         if not file_info['is_series'] or file_info['episode'] == 0:
@@ -275,42 +316,37 @@ def find_missing_episodes(all_files):
     missing_report = []
 
     for (title, season), qualities in sorted(groups.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1])):
-        episode_lines = []
+        all_qualities = sorted(qualities.keys(), key=lambda q: QUALITY_ORDER.get(q.lower(), 7))
+
+        # Every episode number that exists in ANY quality for this season.
+        episodes_present = set()
+        for ep_set in qualities.values():
+            episodes_present |= ep_set
+
+        if not episodes_present:
+            continue
+
+        overall_min, overall_max = min(episodes_present), max(episodes_present)
+        full_range = set(range(overall_min, overall_max + 1))
+
+        # 1. Fully missing episodes — absent from every quality, within the
+        #    season's overall episode span.
+        fully_missing = sorted(full_range - episodes_present)
+
+        # 2. Missing quality — only checked for episodes that actually exist,
+        #    and only meaningful if the season has more than one quality.
         quality_lines = []
-
-        # --- Missing episode numbers: gaps within each quality's own range ---
-        for quality, ep_set in qualities.items():
-            if not ep_set:
-                continue
-            sorted_eps = sorted(list(ep_set))
-            min_ep, max_ep = sorted_eps[0], sorted_eps[-1]
-            full_range = set(range(min_ep, max_ep + 1))
-            missing_eps = sorted(list(full_range - ep_set))
-
-            if missing_eps:
-                missing_str = ", ".join(str(e) for e in missing_eps)
-                episode_lines.append(f"  - {quality}: Ep {missing_str}")
-
-        # --- Missing quality: for each episode that exists, which qualities
-        # it's missing compared to the other qualities available for this show/season ---
-        available_qualities = sorted(qualities.keys(), key=lambda q: QUALITY_ORDER.get(q.lower(), 7))
-
-        if len(available_qualities) > 1:
-            episode_to_have = {}
-            for quality, ep_set in qualities.items():
-                for ep in ep_set:
-                    episode_to_have.setdefault(ep, set()).add(quality)
-
-            for ep in sorted(episode_to_have.keys()):
-                have = episode_to_have[ep]
-                missing_q = [q for q in available_qualities if q not in have]
+        if len(all_qualities) > 1:
+            for ep in sorted(episodes_present):
+                have = {q for q in all_qualities if ep in qualities[q]}
+                missing_q = [q for q in all_qualities if q not in have]
                 if missing_q:
                     quality_lines.append(f"  - Ep {ep:02d}: missing {', '.join(missing_q)}")
 
         show_lines = []
-        if episode_lines:
-            show_lines.append("  <i>Missing Episodes:</i>")
-            show_lines.extend(episode_lines)
+        if fully_missing:
+            ep_str = ", ".join(str(e) for e in fully_missing)
+            show_lines.append(f"  <i>Missing Episodes:</i>\n  - Ep {ep_str}")
         if quality_lines:
             show_lines.append("  <i>Missing Quality:</i>")
             show_lines.extend(quality_lines)
@@ -367,11 +403,18 @@ async def collect_files(client: Client, message: Message):
             filename = message.video.file_name or \
                        (message.caption if message.caption else f"video_{message.video.file_unique_id}.mp4")
             vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
+            # 'cover' is Telegram's dedicated video-cover feature (distinct from
+            # the auto-generated thumbnail) — used by tools like CoverChangerBot.
+            # getattr with a default keeps this safe on pyrogram builds that
+            # don't expose it yet.
+            vid_cover_obj = getattr(message.video, 'cover', None)
+            vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
             files.append({
                 'filename': filename,
                 'format': 'video',
                 'file_id': message.video.file_id,
                 'thumb': vid_thumb,
+                'cover': vid_cover,
                 'duration': message.video.duration,
                 'width': message.video.width,
                 'height': message.video.height,
@@ -642,8 +685,8 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                             parse_mode=ParseMode.HTML
                         )
                     elif file_format == 'video':
-                        await send_with_thumb(
-                            client.send_video, thumb=thumb,
+                        await send_video_preserving_cover(
+                            client.send_video, thumb=thumb, cover=file_info.get('cover'),
                             chat_id=target_chat, video=file_id, caption=caption_text,
                             parse_mode=ParseMode.HTML,
                             duration=file_info.get('duration') or 0,
@@ -871,7 +914,7 @@ async def set_caption_cmd(client: Client, message: Message):
 
         preview = build_caption(template, {
             'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
-            'season': 1, 'episode': 5, 'quality': '720P',
+            'season': 1, 'episode': 5, 'quality': '720p',
             'orig_caption': '🎬 <b>Show Name</b> Episode 5'
         })
 
@@ -927,7 +970,7 @@ async def caption_info_cmd(client: Client, message: Message):
 
         preview = build_caption(template, {
             'filename': 'Show.Name.S01E05.720p.mkv', 'show_title': 'Show Name',
-            'season': 1, 'episode': 5, 'quality': '720P',
+            'season': 1, 'episode': 5, 'quality': '720p',
             'orig_caption': '🎬 <b>Show Name</b> Episode 5'
         })
 
