@@ -28,13 +28,17 @@ LOG_FILE_NAME = "links-sharingbot.txt"
 # Season/Episode regex — matches "S01"/"Season 01", and "E07"/"EP07"/"EP-07"/
 # "Episode 07"/"EP 1177" etc. Optional separator ( -._ or space) between the
 # marker and the digits, digits capped at 4 (not 3) so large episode numbers
-# like "1177" aren't truncated by the matcher, and a trailing word boundary
-# so it doesn't bleed into an adjacent alphanumeric token.
-# NOTE: always use re.IGNORECASE when applying these (they rely on the flag,
+# like "1177" aren't truncated by the matcher.
+# NOTE 1: always use re.IGNORECASE when applying these (they rely on the flag,
 # not character classes, for case handling).
+# NOTE 2: deliberately NO trailing \b — in the extremely common "S01E01"
+# format there's no separator between the season digits and the following
+# "E", so both are "word" characters and a trailing boundary would silently
+# fail to match, season would default to 0, and (title, season) grouping
+# would fall apart across the whole show.
 # ---------------------------------------------------------------------------
-SEASON_PATTERN = r'(?:season|s)[\s\-\._]?(\d{1,2})\b'
-EPISODE_PATTERN = r'(?:episode|ep|e)[\s\-\._]?(\d{1,4})\b'
+SEASON_PATTERN = r'(?:season|s)[\s\-\._]?(\d{1,2})'
+EPISODE_PATTERN = r'(?:episode|ep|e)[\s\-\._]?(\d{1,4})'
 QUALITY_PATTERN = r'(480p|720p|1080p|HDRip|2k|4k)'
 
 # Canonical display casing — QUALITY_PATTERN matches case-insensitively, so a

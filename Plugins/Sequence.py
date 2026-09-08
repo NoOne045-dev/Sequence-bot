@@ -58,6 +58,14 @@ DEFAULT_CAPTION_TEMPLATE = "{caption}"
 # "Episode XX" text label.
 EPISODE_GROUPED_MODES = {"All", "AllSQE", "Episode"}
 
+# Small pacing delay between sends during /esequence. Telegram will throw
+# FloodWait if you send too fast to the same chat — but the wait it then
+# imposes is often much longer than if you'd just paced yourself. A small
+# proactive delay per file is the standard way to avoid tripping that limit
+# in the first place, so 100+ files finish faster overall (fewer/shorter
+# forced waits) rather than slower. Tune via env if needed.
+SEND_PACING_DELAY = float(os.environ.get("SEQUENCE_SEND_DELAY", "0.35"))
+
 # ==================== FLOODWAIT HANDLER ====================
 
 async def handle_floodwait(func, *args, **kwargs):
@@ -759,17 +767,26 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
 
                 if file_id and file_format in ['document', 'video', 'audio']:
                     caption_text = build_caption(caption_template, file_info)
-                    thumb = file_info.get('thumb')
 
+                    # NOTE: resending by file_id reuses the SAME bytes already
+                    # on Telegram's servers — nothing is re-uploaded, so any
+                    # thumbnail/cover the original file already had (including
+                    # a properly ffmpeg-muxed cover) is preserved automatically
+                    # with zero extra parameters needed. Explicitly passing
+                    # thumb=/cover= here was a no-op at best (thumb is
+                    # upload-time-only metadata) and a silently-failing extra
+                    # API attempt at worst (cover expects a freshly uploaded
+                    # photo, not a reused file_id) — so it's removed rather
+                    # than kept as dead weight slowing down large batches.
                     if file_format == 'document':
-                        await send_with_thumb(
-                            client.send_document, thumb=thumb,
+                        await handle_floodwait(
+                            client.send_document,
                             chat_id=target_chat, document=file_id, caption=caption_text,
                             parse_mode=ParseMode.HTML
                         )
                     elif file_format == 'video':
-                        await send_video_preserving_cover(
-                            client.send_video, thumb=thumb, cover=file_info.get('cover'),
+                        await handle_floodwait(
+                            client.send_video,
                             chat_id=target_chat, video=file_id, caption=caption_text,
                             parse_mode=ParseMode.HTML,
                             duration=file_info.get('duration') or 0,
@@ -777,8 +794,8 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                             height=file_info.get('height') or 0
                         )
                     elif file_format == 'audio':
-                        await send_with_thumb(
-                            client.send_audio, thumb=thumb,
+                        await handle_floodwait(
+                            client.send_audio,
                             chat_id=target_chat, audio=file_id, caption=caption_text,
                             parse_mode=ParseMode.HTML,
                             duration=file_info.get('duration') or 0
@@ -787,6 +804,7 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                     await handle_floodwait(client.send_message, chat_id=target_chat, text=f"📄 {filename}")
 
                 sent_count += 1
+                await asyncio.sleep(SEND_PACING_DELAY)
 
             except Exception as file_error:
                 logger.error(f"Failed to send file {filename}: {file_error}")
