@@ -203,6 +203,60 @@ def build_caption(template, file_info):
 
     return rendered.strip() if rendered and rendered.strip() else filename
 
+
+async def send_video_with_cover(client, target_chat, file_info, caption_text):
+    """
+    Videos can carry a distinct Telegram 'cover' (Bot API 8.1+ field, a
+    separate high-quality preview image, NOT the same as the auto-generated
+    'thumb' — a file can have a cover with no thumb at all). copy_message
+    does not reliably relay this field, so it needs an explicit send_video
+    call with the cover= parameter.
+
+    Degrades in order: cover+thumb -> cover only -> thumb only -> plain
+    send_video -> copy_message as the final guaranteed-delivery fallback.
+    Each step only runs if the previous one raised, so on a fully-supported
+    pyrofork build this is a single successful call.
+
+    Requires a pyrofork/kurigram build that implements Bot API 8.1's video
+    'cover' field — if the installed version predates that, the cover
+    attempts will fail and it degrades to thumb/plain/copy automatically
+    (file is never lost, just the cover on that one attempt).
+    """
+    file_id = file_info.get('file_id')
+    cover = file_info.get('cover')
+    thumb = file_info.get('thumb')
+    source_chat_id = file_info.get('source_chat_id')
+    source_message_id = file_info.get('source_message_id')
+
+    base_kwargs = {
+        'video': file_id, 'chat_id': target_chat,
+        'caption': caption_text, 'parse_mode': ParseMode.HTML
+    }
+
+    attempts = []
+    if cover:
+        kw = dict(base_kwargs, cover=cover)
+        if thumb:
+            kw['thumb'] = thumb
+        attempts.append(kw)
+    if thumb:
+        attempts.append(dict(base_kwargs, thumb=thumb))
+    attempts.append(dict(base_kwargs))
+
+    for kw in attempts:
+        try:
+            return await handle_floodwait(client.send_video, **kw)
+        except Exception as e:
+            logger.warning(f"send_video attempt failed ({list(kw.keys())}), trying next fallback: {e}")
+            continue
+
+    if source_chat_id and source_message_id:
+        return await handle_floodwait(
+            client.copy_message, chat_id=target_chat, from_chat_id=source_chat_id,
+            message_id=source_message_id, caption=caption_text, parse_mode=ParseMode.HTML
+        )
+    raise RuntimeError("All send attempts failed for video with no copy_message fallback available")
+
 # ==================== FILE PARSING & MISSING EPISODES ====================
 
 def clean_show_title(filename):
@@ -431,10 +485,19 @@ async def collect_files(client: Client, message: Message):
                 duplicates_this_time += 1
             else:
                 seen_keys.add(key)
+                # 'cover' (Bot API 8.1+) is Telegram's dedicated video-cover
+                # field, DISTINCT from 'thumb' — a file can have a cover with
+                # no thumb at all. getattr with a default keeps this safe on
+                # pyrofork builds that don't expose it yet.
+                vid_cover_obj = getattr(message.video, 'cover', None)
+                vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
+                vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
                 files.append({
                     'filename': filename,
                     'format': 'video',
                     'file_id': message.video.file_id,
+                    'cover': vid_cover,
+                    'thumb': vid_thumb,
                     'source_chat_id': message.chat.id,
                     'source_message_id': message.id,
                     'orig_caption': message.caption.html if message.caption else None
@@ -505,7 +568,7 @@ async def collect_files(client: Client, message: Message):
                         InlineKeyboardButton("⚙️ Mode", callback_data="nq_mode"),
                         InlineKeyboardButton("🛠️ Settings", callback_data="nq_settings")
                     ],
-                    [InlineKeyboardButton("✅ Sequence Now", callback_data="nq_end")]
+                    [InlineKeyboardButton("• Sequence Now •", callback_data="nq_end")]
                 ])
 
                 await handle_floodwait(
@@ -708,15 +771,20 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
 
                 source_chat_id = file_info.get('source_chat_id')
                 source_message_id = file_info.get('source_message_id')
+                caption_text = build_caption(caption_template, file_info)
 
-                if source_chat_id and source_message_id and file_format in ['document', 'video', 'audio']:
-                    caption_text = build_caption(caption_template, file_info)
+                if file_format == 'video' and file_info.get('cover'):
+                    # This file has Telegram's distinct video 'cover' field —
+                    # copy_message doesn't reliably relay it, so it needs its
+                    # own explicit send with cover= (falls back internally to
+                    # copy_message if the cover attempt fails for any reason).
+                    await send_video_with_cover(client, target_chat, file_info, caption_text)
 
+                elif source_chat_id and source_message_id and file_format in ['document', 'video', 'audio']:
                     # copy_message asks Telegram's own servers to duplicate the
-                    # original message's media exactly — cover, thumbnail,
-                    # duration, dimensions, everything — with nothing re-
-                    # uploaded and nothing for us to guess or reattach. This
-                    # is the only way to guarantee the cover is never lost.
+                    # original message's media exactly — thumbnail, duration,
+                    # dimensions, everything — with nothing re-uploaded and
+                    # nothing for us to guess or reattach.
                     await handle_floodwait(
                         client.copy_message,
                         chat_id=target_chat,
@@ -728,7 +796,6 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                 elif file_id and file_format in ['document', 'video', 'audio']:
                     # Fallback for any older session data collected before this
                     # source-tracking existed (no source_chat_id/message_id).
-                    caption_text = build_caption(caption_template, file_info)
                     if file_format == 'document':
                         await handle_floodwait(
                             client.send_document, chat_id=target_chat, document=file_id,
