@@ -3,3 +3,4 @@ tgCrypto-pyrofork
 aiohttp
 motor
 asyncio
+ffmpeg-python

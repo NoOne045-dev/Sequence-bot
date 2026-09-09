@@ -1,6 +1,8 @@
 import os
 import re
 import time
+import uuid
+import shutil
 import asyncio
 import logging
 import html as html_lib
@@ -204,86 +206,139 @@ def build_caption(template, file_info):
     return rendered.strip() if rendered and rendered.strip() else filename
 
 
+async def _mux_cover_into_video(video_path, cover_path):
+    """
+    Physically embeds cover_path as an attached-picture stream inside
+    video_path using ffmpeg -c copy (stream copy — no re-encoding, so it's
+    fast and lossless). Returns the path to the new muxed file, or None if
+    ffmpeg is unavailable, the extension isn't supported, or muxing fails.
+    Mirrors the approach used by CoverChangerBot-style tools.
+    """
+    ff = shutil.which("ffmpeg")
+    if not ff:
+        logger.warning("[COVER DEBUG] ffmpeg not found on PATH — cannot mux cover")
+        return None
+
+    base, ext = os.path.splitext(video_path)
+    ext = ext.lower()
+    out_path = base + "_cv" + ext
+
+    if ext == ".mkv":
+        cmd = [
+            ff, "-y", "-i", video_path,
+            "-attach", cover_path,
+            "-metadata:s:t", "mimetype=image/jpeg",
+            "-metadata:s:t", "filename=cover.jpg",
+            "-c", "copy", out_path,
+        ]
+    elif ext in (".mp4", ".m4v"):
+        cmd = [
+            ff, "-y", "-i", video_path, "-i", cover_path,
+            "-map", "0", "-map", "1", "-c", "copy",
+            "-disposition:v:1", "attached_pic", out_path,
+        ]
+    else:
+        logger.warning(f"[COVER DEBUG] muxing not supported for extension {ext!r}")
+        return None
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE
+        )
+        _, err = await proc.communicate()
+    except Exception as e:
+        logger.warning(f"[COVER DEBUG] ffmpeg subprocess failed to start: {e}")
+        return None
+
+    if proc.returncode == 0 and os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
+        return out_path
+
+    logger.warning(f"[COVER DEBUG] ffmpeg mux failed (code {proc.returncode}): "
+                    f"{(err or b'')[-300:].decode(errors='ignore')}")
+    try:
+        if os.path.exists(out_path):
+            os.remove(out_path)
+    except Exception:
+        pass
+    return None
+
+
 async def send_video_with_cover(client, target_chat, file_info, caption_text):
     """
-    Videos can carry a distinct Telegram 'cover' (Bot API 8.1+ field, a
-    separate high-quality preview image, NOT the same as the auto-generated
-    'thumb' — a file can have a cover with no thumb at all). copy_message
-    does not reliably relay this field.
+    CONFIRMED via live diagnostic testing on the actual bot: Telegram's
+    Bot-API-style cover= parameter on send_video does NOT reliably apply —
+    neither a reused file_id nor a freshly-uploaded cover image resulted in
+    a visible cover, even though the send call itself succeeds with no
+    error (pyrofork 2.3.69 session logs confirmed this). That rules out any
+    application-level parameter fix.
 
-    CONFIRMED (via diagnostic logging): passing cover=<file_id> to
-    send_video succeeds with no error, but Telegram silently ignores it —
-    the override is only actually applied when 'cover' is given as fresh
-    upload bytes, not a reused file_id, even though a file_id is
-    documented as valid for it in general. So: the video itself stays a
-    cheap file_id reference (no re-upload of what's likely a large file),
-    but the cover photo — typically a few hundred KB — is downloaded and
-    re-uploaded fresh, which is what actually makes Telegram apply it.
-
-    Degrades in order: fresh-cover+thumb -> fresh-cover only -> thumb only
-    -> plain send_video -> copy_message as the final guaranteed-delivery
-    fallback, so a download hiccup or an older pyrofork build without the
-    'cover' kwarg never loses the file itself, just the cover on that one
-    attempt.
+    The only reliable method — the same one CoverChangerBot-style tools
+    use — is to physically embed the cover into the video file's own
+    container via ffmpeg, then upload the resulting file fresh. This is
+    heavier than the usual copy_message path (downloads + re-uploads the
+    full video, not just a small cover image), so it's only used for files
+    that actually have a cover to preserve; everything else keeps using
+    the fast copy_message path untouched.
     """
     file_id = file_info.get('file_id')
     cover_file_id = file_info.get('cover')
-    thumb = file_info.get('thumb')
     source_chat_id = file_info.get('source_chat_id')
     source_message_id = file_info.get('source_message_id')
+    filename = file_info.get('filename') or 'video.mp4'
 
-    base_kwargs = {
-        'video': file_id, 'chat_id': target_chat,
-        'caption': caption_text, 'parse_mode': ParseMode.HTML
-    }
+    async def _fallback_copy():
+        if source_chat_id and source_message_id:
+            return await handle_floodwait(
+                client.copy_message, chat_id=target_chat, from_chat_id=source_chat_id,
+                message_id=source_message_id, caption=caption_text, parse_mode=ParseMode.HTML
+            )
+        return await handle_floodwait(
+            client.send_video, chat_id=target_chat, video=file_id,
+            caption=caption_text, parse_mode=ParseMode.HTML
+        )
 
-    cover_local_path = None
-    if cover_file_id:
-        try:
-            tmp_name = f"/tmp/cover_{abs(hash(cover_file_id)) % 10_000_000}.jpg"
-            cover_local_path = await client.download_media(cover_file_id, file_name=tmp_name)
-            logger.info(f"[COVER DEBUG] downloaded cover fresh -> {cover_local_path}")
-        except Exception as e:
-            logger.warning(f"[COVER DEBUG] cover download failed, will skip cover for this file: {e}")
-            cover_local_path = None
+    if not cover_file_id:
+        return await _fallback_copy()
 
-    attempts = []
-    if cover_local_path:
-        kw = dict(base_kwargs, cover=cover_local_path)
-        if thumb:
-            kw['thumb'] = thumb
-        attempts.append(kw)
-    if thumb:
-        attempts.append(dict(base_kwargs, thumb=thumb))
-    attempts.append(dict(base_kwargs))
+    work_id = uuid.uuid4().hex[:8]
+    ext = os.path.splitext(filename)[1] or ".mp4"
+    video_local = None
+    cover_local = None
+    muxed_local = None
 
-    result = None
-    for kw in attempts:
-        try:
-            result = await handle_floodwait(client.send_video, **kw)
-            logger.info(f"[COVER DEBUG] send succeeded with kwargs={list(kw.keys())}")
-            break
-        except Exception as e:
-            logger.warning(f"[COVER DEBUG] send_video attempt failed (kwargs={list(kw.keys())}): {e}")
-            continue
+    try:
+        video_local = await client.download_media(file_id, file_name=f"/tmp/seq_{work_id}{ext}")
+        cover_local = await client.download_media(cover_file_id, file_name=f"/tmp/seq_cover_{work_id}.jpg")
 
-    # Clean up the temp download regardless of outcome.
-    if cover_local_path:
-        try:
-            os.remove(cover_local_path)
-        except Exception:
-            pass
+        if not video_local or not cover_local:
+            logger.warning("[COVER DEBUG] download failed, falling back to copy_message")
+            return await _fallback_copy()
 
-    if result is not None:
+        muxed_local = await _mux_cover_into_video(video_local, cover_local)
+
+        if not muxed_local:
+            logger.warning("[COVER DEBUG] mux failed, falling back to copy_message")
+            return await _fallback_copy()
+
+        logger.info(f"[COVER DEBUG] muxed cover into {muxed_local}, uploading fresh")
+        result = await handle_floodwait(
+            client.send_video, chat_id=target_chat, video=muxed_local,
+            caption=caption_text, parse_mode=ParseMode.HTML
+        )
+        logger.info("[COVER DEBUG] muxed video uploaded successfully")
         return result
 
-    logger.warning("[COVER DEBUG] all send_video attempts failed, falling back to copy_message")
-    if source_chat_id and source_message_id:
-        return await handle_floodwait(
-            client.copy_message, chat_id=target_chat, from_chat_id=source_chat_id,
-            message_id=source_message_id, caption=caption_text, parse_mode=ParseMode.HTML
-        )
-    raise RuntimeError("All send attempts failed for video with no copy_message fallback available")
+    except Exception as e:
+        logger.warning(f"[COVER DEBUG] mux-and-reupload pipeline failed ({e}), falling back to copy_message")
+        return await _fallback_copy()
+
+    finally:
+        for p in (video_local, cover_local, muxed_local):
+            if p:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
 
 # ==================== FILE PARSING & MISSING EPISODES ====================
 
