@@ -245,11 +245,14 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
 
     for kw in attempts:
         try:
-            return await handle_floodwait(client.send_video, **kw)
+            result = await handle_floodwait(client.send_video, **kw)
+            logger.info(f"[COVER DEBUG] send succeeded with kwargs={list(kw.keys())}")
+            return result
         except Exception as e:
-            logger.warning(f"send_video attempt failed ({list(kw.keys())}), trying next fallback: {e}")
+            logger.warning(f"[COVER DEBUG] send_video attempt failed (kwargs={list(kw.keys())}): {e}")
             continue
 
+    logger.warning("[COVER DEBUG] all send_video attempts failed, falling back to copy_message")
     if source_chat_id and source_message_id:
         return await handle_floodwait(
             client.copy_message, chat_id=target_chat, from_chat_id=source_chat_id,
@@ -492,6 +495,17 @@ async def collect_files(client: Client, message: Message):
                 vid_cover_obj = getattr(message.video, 'cover', None)
                 vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
                 vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
+
+                # TEMP DIAGNOSTIC — remove once cover is confirmed working.
+                # Tells us definitively whether pyrofork even exposes a
+                # 'cover' attribute on this Video object, and what it holds.
+                logger.info(
+                    f"[COVER DEBUG] file={filename!r} "
+                    f"has_cover_attr={hasattr(message.video, 'cover')} "
+                    f"cover_obj={vid_cover_obj!r} cover_file_id={vid_cover!r} "
+                    f"thumb_file_id={vid_thumb!r}"
+                )
+
                 files.append({
                     'filename': filename,
                     'format': 'video',
@@ -534,13 +548,22 @@ async def collect_files(client: Client, message: Message):
         # message — this is a status ping (shows as "sending file..." /
         # "typing..." near the input box), not a chat message, so it doesn't
         # break the quiet batching the debounced notification relies on.
-        try:
-            if message.document or message.video or message.audio:
-                await message.reply_chat_action(ChatAction.UPLOAD_DOCUMENT)
-            else:
-                await message.reply_chat_action(ChatAction.TYPING)
-        except Exception as ca_err:
-            logger.debug(f"chat_action failed (non-critical): {ca_err}")
+        #
+        # Throttled to at most once per ~4s per user: Telegram's chat-action
+        # indicator visually lasts ~5s on its own, so firing it on every
+        # single file in a rapid 100+ file batch was pure waste — each call
+        # is its own API request and itself contributes to flood risk with
+        # zero visible benefit between calls that land under a second apart.
+        now_ts = time.time()
+        if now_ts - session.get('last_chat_action', 0) >= 4:
+            session['last_chat_action'] = now_ts
+            try:
+                if message.document or message.video or message.audio:
+                    await message.reply_chat_action(ChatAction.UPLOAD_DOCUMENT)
+                else:
+                    await message.reply_chat_action(ChatAction.TYPING)
+            except Exception as ca_err:
+                logger.debug(f"chat_action failed (non-critical): {ca_err}")
 
         current_total = len(files)
 
@@ -568,7 +591,7 @@ async def collect_files(client: Client, message: Message):
                         InlineKeyboardButton("⚙️ Mode", callback_data="nq_mode"),
                         InlineKeyboardButton("🛠️ Settings", callback_data="nq_settings")
                     ],
-                    [InlineKeyboardButton("• Sequence Now •", callback_data="nq_end")]
+                    [InlineKeyboardButton("• Sᴇǫᴜᴇɴᴄᴇ Nᴏᴡ •", callback_data="nq_end")]
                 ])
 
                 await handle_floodwait(
@@ -602,6 +625,7 @@ async def arrange_cmd(client: Client, message: Message):
             'files': [],
             'seen_keys': set(),
             'total_duplicates': 0,
+            'last_chat_action': 0,
             'start_time': time.time()
         }
 
