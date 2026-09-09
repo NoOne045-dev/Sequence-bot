@@ -209,21 +209,25 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
     Videos can carry a distinct Telegram 'cover' (Bot API 8.1+ field, a
     separate high-quality preview image, NOT the same as the auto-generated
     'thumb' — a file can have a cover with no thumb at all). copy_message
-    does not reliably relay this field, so it needs an explicit send_video
-    call with the cover= parameter.
+    does not reliably relay this field.
 
-    Degrades in order: cover+thumb -> cover only -> thumb only -> plain
-    send_video -> copy_message as the final guaranteed-delivery fallback.
-    Each step only runs if the previous one raised, so on a fully-supported
-    pyrofork build this is a single successful call.
+    CONFIRMED (via diagnostic logging): passing cover=<file_id> to
+    send_video succeeds with no error, but Telegram silently ignores it —
+    the override is only actually applied when 'cover' is given as fresh
+    upload bytes, not a reused file_id, even though a file_id is
+    documented as valid for it in general. So: the video itself stays a
+    cheap file_id reference (no re-upload of what's likely a large file),
+    but the cover photo — typically a few hundred KB — is downloaded and
+    re-uploaded fresh, which is what actually makes Telegram apply it.
 
-    Requires a pyrofork/kurigram build that implements Bot API 8.1's video
-    'cover' field — if the installed version predates that, the cover
-    attempts will fail and it degrades to thumb/plain/copy automatically
-    (file is never lost, just the cover on that one attempt).
+    Degrades in order: fresh-cover+thumb -> fresh-cover only -> thumb only
+    -> plain send_video -> copy_message as the final guaranteed-delivery
+    fallback, so a download hiccup or an older pyrofork build without the
+    'cover' kwarg never loses the file itself, just the cover on that one
+    attempt.
     """
     file_id = file_info.get('file_id')
-    cover = file_info.get('cover')
+    cover_file_id = file_info.get('cover')
     thumb = file_info.get('thumb')
     source_chat_id = file_info.get('source_chat_id')
     source_message_id = file_info.get('source_message_id')
@@ -233,9 +237,19 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
         'caption': caption_text, 'parse_mode': ParseMode.HTML
     }
 
+    cover_local_path = None
+    if cover_file_id:
+        try:
+            tmp_name = f"/tmp/cover_{abs(hash(cover_file_id)) % 10_000_000}.jpg"
+            cover_local_path = await client.download_media(cover_file_id, file_name=tmp_name)
+            logger.info(f"[COVER DEBUG] downloaded cover fresh -> {cover_local_path}")
+        except Exception as e:
+            logger.warning(f"[COVER DEBUG] cover download failed, will skip cover for this file: {e}")
+            cover_local_path = None
+
     attempts = []
-    if cover:
-        kw = dict(base_kwargs, cover=cover)
+    if cover_local_path:
+        kw = dict(base_kwargs, cover=cover_local_path)
         if thumb:
             kw['thumb'] = thumb
         attempts.append(kw)
@@ -243,14 +257,25 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
         attempts.append(dict(base_kwargs, thumb=thumb))
     attempts.append(dict(base_kwargs))
 
+    result = None
     for kw in attempts:
         try:
             result = await handle_floodwait(client.send_video, **kw)
             logger.info(f"[COVER DEBUG] send succeeded with kwargs={list(kw.keys())}")
-            return result
+            break
         except Exception as e:
             logger.warning(f"[COVER DEBUG] send_video attempt failed (kwargs={list(kw.keys())}): {e}")
             continue
+
+    # Clean up the temp download regardless of outcome.
+    if cover_local_path:
+        try:
+            os.remove(cover_local_path)
+        except Exception:
+            pass
+
+    if result is not None:
+        return result
 
     logger.warning("[COVER DEBUG] all send_video attempts failed, falling back to copy_message")
     if source_chat_id and source_message_id:
