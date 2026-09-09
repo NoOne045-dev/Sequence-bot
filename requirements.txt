@@ -5,4 +5,3 @@ TgCrypto
 aiohttp
 motor
 asyncio
-ffmpeg-python
