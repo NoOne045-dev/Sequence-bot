@@ -1,5 +1,7 @@
-pyrofork
-tgCrypto-pyrofork
+#pyrofork
+#tgCrypto-pyrofork
+Kurigram
+TgCrypto
 aiohttp
 motor
 asyncio
