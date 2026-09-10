@@ -10,6 +10,7 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.enums import ParseMode, ChatAction, ChatMemberStatus
+from pyrogram.raw import types as raw_types, functions as raw_functions
 
 from config import *
 from Plugins.callbacks import MODES, get_mode_keyboard
@@ -81,6 +82,52 @@ async def handle_floodwait(func, *args, **kwargs):
         except Exception as e:
             logger.error(f"Error in operation: {e}")
             raise e
+
+# ==================== RAW-API MESSAGE COPY ====================
+# Bot-API-level sending (send_video/copy_message) RECONSTRUCTS the outgoing
+# message from scratch on the client side, so any field pyrofork's Python
+# layer doesn't (yet) expose -- like the video 'cover' (Bot API 8.1+) --
+# gets silently dropped even when Telegram itself has it attached to the
+# source message.
+#
+# messages.ForwardMessages with drop_author=True is Telegram's own
+# "forward without attribution" primitive: the server duplicates the RAW
+# message object, so every attribute -- cover included -- survives
+# regardless of whether this pyrofork build knows about that field at all.
+# We then edit the caption on the resulting message to apply our template.
+
+async def raw_forward_copy(client, target_chat, source_chat_id, source_message_id, protect_content=False):
+    """
+    Server-side copy via raw MTProto messages.ForwardMessages(drop_author=True).
+    Returns the new message id in target_chat, or raises on failure.
+    """
+    peer = await client.resolve_peer(target_chat)
+    from_peer = await client.resolve_peer(source_chat_id)
+    random_id = client.rnd_id()
+
+    res = await handle_floodwait(
+        client.invoke,
+        raw_functions.messages.ForwardMessages(
+            from_peer=from_peer,
+            id=[source_message_id],
+            random_id=[random_id],
+            to_peer=peer,
+            drop_author=True,
+            noforwards=protect_content or None
+        )
+    )
+
+    new_msg_id = None
+    for u in getattr(res, "updates", []):
+        if isinstance(u, (raw_types.UpdateNewMessage, raw_types.UpdateNewChannelMessage)):
+            new_msg_id = u.message.id
+            break
+
+    if new_msg_id is None:
+        raise RuntimeError("ForwardMessages did not return a new message id")
+
+    return new_msg_id
+
 
 # ==================== SHARED DUMP CHANNEL VERIFICATION ====================
 
@@ -207,84 +254,64 @@ def build_caption(template, file_info):
 
 async def send_video_with_cover(client, target_chat, file_info, caption_text):
     """
-    Videos can carry a distinct Telegram 'cover' (Bot API 8.1+ field, a
-    separate high-quality preview image, NOT the same as the auto-generated
-    'thumb' — a file can have a cover with no thumb at all). copy_message
-    does not reliably relay this field.
+    Sends a video while preserving Telegram's distinct 'cover' field
+    (Bot API 8.1+, NOT the same as the auto-generated 'thumb' — a file can
+    have a cover with no thumb at all).
 
-    CONFIRMED (via diagnostic logging): passing cover=<file_id> to
-    send_video succeeds with no error, but Telegram silently ignores it —
-    the override is only actually applied when 'cover' is given as fresh
-    upload bytes, not a reused file_id, even though a file_id is
-    documented as valid for it in general. So: the video itself stays a
-    cheap file_id reference (no re-upload of what's likely a large file),
-    but the cover photo — typically a few hundred KB — is downloaded and
-    re-uploaded fresh, which is what actually makes Telegram apply it.
+    Primary path: raw_forward_copy() — a server-side forward-as-copy that
+    duplicates the original message's raw attributes (cover included)
+    without pyrofork needing to understand or pass that field at all, then
+    edit_message_caption() applies our own caption template on top.
 
-    Degrades in order: fresh-cover+thumb -> fresh-cover only -> thumb only
-    -> plain send_video -> copy_message as the final guaranteed-delivery
-    fallback, so a download hiccup or an older pyrofork build without the
-    'cover' kwarg never loses the file itself, just the cover on that one
-    attempt.
+    This replaces the old download-the-cover-locally-and-reupload-it-via-
+    send_video(cover=<path>) approach. That only worked when (a) this
+    pyrofork build even exposed message.video.cover in the first place,
+    and (b) send_video's 'cover' kwarg was actually honored by the
+    connected Bot API layer — both of which are version-dependent, and
+    were the real reason covers were getting dropped: builds that don't
+    expose the attribute never attempted to preserve it at all.
+
+    Degrades: raw forward-copy -> copy_message -> plain send_video
+    (file_id), so a raw-API hiccup never loses the file — just the cover
+    on that one attempt.
     """
-    file_id = file_info.get('file_id')
-    cover_file_id = file_info.get('cover')
-    thumb = file_info.get('thumb')
     source_chat_id = file_info.get('source_chat_id')
     source_message_id = file_info.get('source_message_id')
+    file_id = file_info.get('file_id')
 
-    base_kwargs = {
-        'video': file_id, 'chat_id': target_chat,
-        'caption': caption_text, 'parse_mode': ParseMode.HTML
-    }
-
-    cover_local_path = None
-    if cover_file_id:
-        try:
-            tmp_name = f"/tmp/cover_{abs(hash(cover_file_id)) % 10_000_000}.jpg"
-            cover_local_path = await client.download_media(cover_file_id, file_name=tmp_name)
-            logger.info(f"[COVER DEBUG] downloaded cover fresh -> {cover_local_path}")
-        except Exception as e:
-            logger.warning(f"[COVER DEBUG] cover download failed, will skip cover for this file: {e}")
-            cover_local_path = None
-
-    attempts = []
-    if cover_local_path:
-        kw = dict(base_kwargs, cover=cover_local_path)
-        if thumb:
-            kw['thumb'] = thumb
-        attempts.append(kw)
-    if thumb:
-        attempts.append(dict(base_kwargs, thumb=thumb))
-    attempts.append(dict(base_kwargs))
-
-    result = None
-    for kw in attempts:
-        try:
-            result = await handle_floodwait(client.send_video, **kw)
-            logger.info(f"[COVER DEBUG] send succeeded with kwargs={list(kw.keys())}")
-            break
-        except Exception as e:
-            logger.warning(f"[COVER DEBUG] send_video attempt failed (kwargs={list(kw.keys())}): {e}")
-            continue
-
-    # Clean up the temp download regardless of outcome.
-    if cover_local_path:
-        try:
-            os.remove(cover_local_path)
-        except Exception:
-            pass
-
-    if result is not None:
-        return result
-
-    logger.warning("[COVER DEBUG] all send_video attempts failed, falling back to copy_message")
     if source_chat_id and source_message_id:
+        try:
+            new_msg_id = await raw_forward_copy(client, target_chat, source_chat_id, source_message_id)
+            try:
+                return await handle_floodwait(
+                    client.edit_message_caption,
+                    chat_id=target_chat,
+                    message_id=new_msg_id,
+                    caption=caption_text,
+                    parse_mode=ParseMode.HTML
+                )
+            except Exception as edit_err:
+                # Copy already succeeded (cover preserved) — don't re-send
+                # the file over a caption-edit hiccup, just return as-is.
+                logger.warning(f"[COVER] raw copy ok but caption edit failed: {edit_err}")
+                return await client.get_messages(target_chat, message_ids=new_msg_id)
+        except Exception as e:
+            logger.warning(f"[COVER] raw_forward_copy failed, falling back to copy_message: {e}")
+            try:
+                return await handle_floodwait(
+                    client.copy_message, chat_id=target_chat, from_chat_id=source_chat_id,
+                    message_id=source_message_id, caption=caption_text, parse_mode=ParseMode.HTML
+                )
+            except Exception as copy_err:
+                logger.warning(f"[COVER] copy_message fallback also failed: {copy_err}")
+
+    if file_id:
         return await handle_floodwait(
-            client.copy_message, chat_id=target_chat, from_chat_id=source_chat_id,
-            message_id=source_message_id, caption=caption_text, parse_mode=ParseMode.HTML
+            client.send_video, chat_id=target_chat, video=file_id,
+            caption=caption_text, parse_mode=ParseMode.HTML
         )
-    raise RuntimeError("All send attempts failed for video with no copy_message fallback available")
+
+    raise RuntimeError("No source message or file_id available to send this video")
 
 # ==================== FILE PARSING & MISSING EPISODES ====================
 
@@ -823,11 +850,15 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                 source_message_id = file_info.get('source_message_id')
                 caption_text = build_caption(caption_template, file_info)
 
-                if file_format == 'video' and file_info.get('cover'):
-                    # This file has Telegram's distinct video 'cover' field —
-                    # copy_message doesn't reliably relay it, so it needs its
-                    # own explicit send with cover= (falls back internally to
-                    # copy_message if the cover attempt fails for any reason).
+                if file_format == 'video' and source_chat_id and source_message_id:
+                    # Route ALL videos with a known source through the
+                    # raw-API copy path — it preserves the 'cover' field
+                    # unconditionally (server-side), so this is no longer
+                    # gated on file_info['cover'] being detected at
+                    # collection time. That detection depended on this
+                    # pyrofork build exposing message.video.cover, which
+                    # was the actual bug: builds that don't expose it never
+                    # even tried to preserve the cover.
                     await send_video_with_cover(client, target_chat, file_info, caption_text)
 
                 elif source_chat_id and source_message_id and file_format in ['document', 'video', 'audio']:
