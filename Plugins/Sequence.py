@@ -7,7 +7,7 @@ import html as html_lib
 from datetime import datetime
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.enums import ParseMode, ChatAction, ChatMemberStatus
 from pyrogram.raw import types as raw_types, functions as raw_functions
@@ -1287,7 +1287,7 @@ async def leaderboard_cmd(client: Client, message: Message):
             message.reply_text,
             text,
             parse_mode=ParseMode.HTML,
-            link_preview_options=LinkPreviewOptions(is_disabled=True)
+            disable_web_page_preview=True
         )
 
     except Exception as e:
