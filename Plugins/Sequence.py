@@ -965,7 +965,7 @@ async def cancel_cmd(client: Client, message: Message):
 
 # ==================== DUMP CHANNEL COMMANDS ====================
 
-@Client.on_message(filters.command("add_dump") & filters.private)
+@Client.on_message(filters.command("add_dump", "adddump") & filters.private)
 @check_ban
 @check_fsub
 async def add_dump_cmd(client: Client, message: Message):
@@ -995,7 +995,7 @@ async def add_dump_cmd(client: Client, message: Message):
         await handle_floodwait(message.reply_text, f"❌ Error processing command: {str(e)}", parse_mode=ParseMode.HTML)
 
 
-@Client.on_message(filters.command("rem_dump") & filters.private)
+@Client.on_message(filters.command("del_dump", "deldump") & filters.private)
 @check_ban
 @check_fsub
 async def rem_dump_cmd(client: Client, message: Message):
@@ -1018,7 +1018,7 @@ async def rem_dump_cmd(client: Client, message: Message):
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
 
 
-@Client.on_message(filters.command("dump_info") & filters.private)
+@Client.on_message(filters.command("dump_info", "dumpinfo") & filters.private)
 @check_ban
 @check_fsub
 async def dump_info_cmd(client: Client, message: Message):
@@ -1060,7 +1060,7 @@ async def dump_info_cmd(client: Client, message: Message):
 
 # ==================== CAPTION TEMPLATE COMMANDS ====================
 
-@Client.on_message(filters.command("set_caption") & filters.private)
+@Client.on_message(filters.command("set_caption", "setcap") & filters.private)
 @check_ban
 @check_fsub
 async def set_caption_cmd(client: Client, message: Message):
@@ -1094,7 +1094,7 @@ async def set_caption_cmd(client: Client, message: Message):
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
 
 
-@Client.on_message(filters.command("rem_caption") & filters.private)
+@Client.on_message(filters.command("del_caption", "delcap") & filters.private)
 @check_ban
 @check_fsub
 async def rem_caption_cmd(client: Client, message: Message):
@@ -1117,7 +1117,7 @@ async def rem_caption_cmd(client: Client, message: Message):
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
 
 
-@Client.on_message(filters.command("caption_info") & filters.private)
+@Client.on_message(filters.command("caption_info", "capinfo") & filters.private)
 @check_ban
 @check_fsub
 async def caption_info_cmd(client: Client, message: Message):
@@ -1154,7 +1154,7 @@ async def caption_info_cmd(client: Client, message: Message):
 
 # ==================== PER-USER STATS ====================
 
-@Client.on_message(filters.command("mystats") & filters.private)
+@Client.on_message(filters.command("mystats", "myst") & filters.private)
 @check_ban
 @check_fsub
 async def mystats_cmd(client: Client, message: Message):
