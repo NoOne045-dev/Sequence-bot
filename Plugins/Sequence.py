@@ -7,7 +7,7 @@ import html as html_lib
 from datetime import datetime
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.enums import ParseMode, ChatAction, ChatMemberStatus
 
@@ -24,8 +24,9 @@ pending_notifications = {}  # User debounce timers
 # Ensure commands are strictly ignored by text collector
 EXCLUDED_COMMANDS = [
     "ssequence", "esequence", "mode", "cancel", "settings",
-    "add_dump", "del_dump", "dump_info", "leaderboard", "mystats",
-    "set_caption", "del_caption", "caption_info",
+    "add_dump", "adddump", "del_dump", "deldump", "dump_info", "dumpinfo",
+    "leaderboard", "mystats", "myst",
+    "set_caption", "setcap", "del_caption", "delcap", "caption_info", "capinfo",
     "start", "help", "about",
     "add_admin", "deladmin", "admins",
     "ban", "unban", "banned",
@@ -524,7 +525,7 @@ async def collect_files(client: Client, message: Message):
                 # TEMP DIAGNOSTIC — remove once cover is confirmed working.
                 # Tells us definitively whether pyrofork even exposes a
                 # 'cover' attribute on this Video object, and what it holds.
-                logger.info(
+                logger.debug(
                     f"[COVER DEBUG] file={filename!r} "
                     f"has_cover_attr={hasattr(message.video, 'cover')} "
                     f"cover_obj={vid_cover_obj!r} cover_file_id={vid_cover!r} "
@@ -1255,7 +1256,7 @@ async def leaderboard_cmd(client: Client, message: Message):
             message.reply_text,
             text,
             parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
         )
 
     except Exception as e:
