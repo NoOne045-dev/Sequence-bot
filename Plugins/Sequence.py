@@ -24,8 +24,8 @@ pending_notifications = {}  # User debounce timers
 # Ensure commands are strictly ignored by text collector
 EXCLUDED_COMMANDS = [
     "ssequence", "esequence", "mode", "cancel", "settings",
-    "add_dump", "rem_dump", "dump_info", "leaderboard", "mystats",
-    "set_caption", "rem_caption", "caption_info",
+    "add_dump", "del_dump", "dump_info", "leaderboard", "mystats",
+    "set_caption", "del_caption", "caption_info",
     "start", "help", "about",
     "add_admin", "deladmin", "admins",
     "ban", "unban", "banned",
