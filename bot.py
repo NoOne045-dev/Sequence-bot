@@ -74,7 +74,8 @@ class Bot(Client):
                 BotCommand("fsub_mode", "ᴄʜᴀɴɢᴇ ꜰsᴜʙ ᴍᴏᴅᴇ (ᴏɴʟʏ ᴀᴅᴍɪɴs)"),
                 BotCommand("addchnl", "ᴀᴅᴅ ꜰsᴜʙ ᴄʜᴀɴɴᴇʟ (ᴏɴʟʏ ᴀᴅᴍɪɴs)"),
                 BotCommand("delchnl", "ʀᴇᴍᴏᴠᴇ ꜰsᴜʙ ᴄʜᴀɴɴᴇʟ (ᴏɴʟʏ ᴀᴅᴍɪɴs)"),
-                BotCommand("listchnl", "ʟɪsᴛ ꜰsᴜʙ ᴄʜᴀɴɴᴇʟs (ᴏɴʟʏ ᴀᴅᴍɪɴs)")
+                BotCommand("listchnl", "ʟɪsᴛ ꜰsᴜʙ ᴄʜᴀɴɴᴇʟs (ᴏɴʟʏ ᴀᴅᴍɪɴs)"),
+                BotCommand("dashboard", "ʙᴏᴛ ᴏᴠᴇʀᴠɪᴇᴡ (ᴏɴʟʏ ᴀᴅᴍɪɴs)")
             ])
         except Exception as e:
             print(f"Error setting bot commands: {e}")

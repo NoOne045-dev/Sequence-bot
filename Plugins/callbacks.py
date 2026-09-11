@@ -1,5 +1,5 @@
 from pyrogram import Client, ContinuePropagation
-from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto
+from pyrogram.types import CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, LinkPreviewOptions
 from pyrogram.enums import ParseMode
 from pyrogram.errors import FloodWait
 import asyncio
@@ -123,7 +123,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
                     text,
                     reply_markup=get_mode_keyboard(mode_key),
                     parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True
+                    link_preview_options=LinkPreviewOptions(is_disabled=True)
                 )
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
@@ -131,7 +131,7 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
                     text,
                     reply_markup=get_mode_keyboard(mode_key),
                     parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True
+                    link_preview_options=LinkPreviewOptions(is_disabled=True)
                 )
 
         # ─── Other existing callbacks ──────────────────────────────

@@ -2,7 +2,7 @@ from config import *
 from Plugins.callbacks import *
 from Plugins.start import *
 from Database.database import CosmicBotz
-from pyrogram.types import Message, ChatMemberUpdated, ChatJoinRequest, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message, ChatMemberUpdated, ChatJoinRequest, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 from pyrogram import Client, filters
 from pyrogram.errors import PeerIdInvalid, FloodWait, InputUserDeactivated, UserIsBlocked, RPCError
 from pyrogram.enums import ChatType, ChatMemberStatus, ParseMode
@@ -32,7 +32,7 @@ admin = filters.create(check_admin)
 @Client.on_message(filters.command('add_admin') & filters.private & admin)
 async def add_admins(client: Client, message: Message):
     try:
-        pro = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>", quote=True)
+        pro = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>")
         admin_ids = await CosmicBotz.list_admins()
         admins = message.text.split()[1:]
 
@@ -87,7 +87,7 @@ async def add_admins(client: Client, message: Message):
 @Client.on_message(filters.command('deladmin') & filters.private & admin)
 async def delete_admins(client: Client, message: Message):
     try:
-        pro = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>", quote=True)
+        pro = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>")
         admin_ids = await CosmicBotz.list_admins()
         admins = message.text.split()[1:]
 
@@ -154,7 +154,7 @@ async def delete_admins(client: Client, message: Message):
 @Client.on_message(filters.command('admins') & filters.private & admin)
 async def get_admins(client: Client, message: Message):
     try:
-        pro = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>", quote=True)
+        pro = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>")
         admin_ids = await CosmicBotz.list_admins()
 
         if not admin_ids:
@@ -339,7 +339,7 @@ async def banned_list(bot, message):
 # Request force sub mode command
 @Client.on_message(filters.command('fsub_mode') & filters.private & admin)
 async def change_force_sub_mode(client: Client, message: Message):
-    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>", quote=True)
+    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>")
     channels = await CosmicBotz.show_channels()
 
     if not channels:
@@ -394,7 +394,7 @@ async def handle_join_request(client, chat_join_request):
 
 @Client.on_message(filters.command('addchnl') & filters.private & admin)
 async def add_force_sub(client: Client, message: Message):
-    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>", quote=True)
+    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>")
     args = message.text.split(maxsplit=1)
 
     if len(args) != 2:
@@ -449,7 +449,7 @@ async def add_force_sub(client: Client, message: Message):
 # Delete channel
 @Client.on_message(filters.command('delchnl') & filters.private & admin)
 async def del_force_sub(client: Client, message: Message):
-    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>", quote=True)
+    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>")
     args = message.text.split(maxsplit=1)
     all_channels = await CosmicBotz.show_channels()
 
@@ -485,7 +485,7 @@ async def del_force_sub(client: Client, message: Message):
 # View all channels
 @Client.on_message(filters.command('listchnl') & filters.private & admin)
 async def list_force_sub_channels(client: Client, message: Message):
-    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>", quote=True)
+    temp = await message.reply("<b><i>ᴡᴀɪᴛ ᴀ sᴇᴄ..</i></b>")
     channels = await CosmicBotz.show_channels()
 
     if not channels:
@@ -500,7 +500,7 @@ async def list_force_sub_channels(client: Client, message: Message):
         except Exception:
             result += f"<b>•</b> <code>{ch_id}</code> — <i>Unavailable</i>\n"
 
-    await temp.edit(result, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Close ✖️", callback_data="close")]]))
+    await temp.edit(result, link_preview_options=LinkPreviewOptions(is_disabled=True), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Close ✖️", callback_data="close")]]))
 
 @Client.on_message(filters.command("broadcast") & filters.private & admin)
 async def broadcast_handler(client: Client, m: Message):
@@ -557,8 +557,11 @@ async def broadcast_handler(client: Client, m: Message):
                     
                     if done % 50 == 0:
                         try:
+                            pct = (done / total_users) if total_users else 0
+                            filled = int(12 * pct)
+                            bar = f"{'█' * filled}{'░' * (12 - filled)} {int(pct * 100)}%"
                             await sts_msg.edit(
-                                f"Broadcast In Progress: \n\n"
+                                f"📢 Broadcast In Progress\n{bar}\n\n"
                                 f"Total Users {total_users} \n"
                                 f"Completed : {done} / {total_users}\n"
                                 f"Success : {success}\n"
@@ -654,7 +657,7 @@ async def send_msg(user_id, message):
 async def get_stats(bot: Client, message: Message):
     try:
         start_t = time.time()
-        st = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>", quote=True)
+        st = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>")
         end_t = time.time()
         time_taken_ms = (end_t - start_t) * 1000
 
@@ -682,4 +685,44 @@ async def get_stats(bot: Client, message: Message):
         )
     except Exception as e:
         logger.error(f"Error in get_stats handler: {e}")
+        await message.reply_text(f"<b>❌ Eʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ:</b> <code>{str(e)}</code>")
+
+
+@Client.on_message(filters.command(["dashboard", "admindash"]) & filters.private & admin)
+async def admin_dashboard(client: Client, message: Message):
+    try:
+        from Plugins.Sequence import user_sessions  # deferred: avoids circular import
+
+        msg = await message.reply("<b><i>ᴘʟᴇᴀsᴇ ᴡᴀɪᴛ..</i></b>")
+
+        active_sessions = len(user_sessions)
+        total_users = await CosmicBotz.total_users_count()
+        total_admins = len(await CosmicBotz.list_admins())
+        banned_count = await CosmicBotz.ban_data.count_documents({"ban_status.is_banned": True})
+
+        channels = await CosmicBotz.show_channels()
+        healthy = 0
+        for cid in channels:
+            try:
+                await client.get_chat_member(cid, "me")
+                healthy += 1
+            except Exception:
+                pass
+        broken = len(channels) - healthy
+
+        text = (
+            "<b>🛠️ Aᴅᴍɪɴ Dᴀsʜʙᴏᴀʀᴅ</b>\n\n"
+            f"👥 <b>Total Users:</b> <code>{total_users}</code>\n"
+            f"🛡️ <b>Admins:</b> <code>{total_admins}</code>\n"
+            f"🚫 <b>Banned Users:</b> <code>{banned_count}</code>\n"
+            f"📤 <b>Active Sequence Sessions:</b> <code>{active_sessions}</code>\n"
+            f"📢 <b>Fsub Channels:</b> <code>{len(channels)}</code> "
+            f"(<code>{healthy}</code> ✅ / <code>{broken}</code> ⚠️)"
+        )
+        await msg.edit(
+            text,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("ᴄʟᴏsᴇ", callback_data="close")]])
+        )
+    except Exception as e:
+        logger.error(f"Error in admin_dashboard: {e}", exc_info=True)
         await message.reply_text(f"<b>❌ Eʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ:</b> <code>{str(e)}</code>")

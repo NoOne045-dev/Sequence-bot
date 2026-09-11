@@ -1,6 +1,6 @@
 import motor.motor_asyncio
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional
 from config import *
 
@@ -33,6 +33,9 @@ class Master:
 
         # Per-user sorting mode storage
         self.sequence_mode = self.database['sequence_mode']
+
+        # One row per completed batch — powers daily/weekly/monthly/alltime leaderboards
+        self.activity_log = self.database['activity_log']
 
         # Backward compatibility alias
         self.col = self.user_data
@@ -277,6 +280,70 @@ class Master:
         except Exception as e:
             logging.error(f"Error setting sequence_mode for {user_id}: {e}")
             return False
+
+    # ==================== ACTIVITY LOG / PERIOD LEADERBOARDS ====================
+
+    async def log_activity(self, user_id: int, mention: str, count: int) -> bool:
+        """Record one completed batch — used for daily/weekly/monthly/alltime leaderboards."""
+        if count <= 0:
+            return False
+        try:
+            await self.activity_log.insert_one({
+                "user_id": int(user_id),
+                "mention": mention,
+                "count": count,
+                "timestamp": datetime.utcnow()
+            })
+            return True
+        except Exception as e:
+            logging.error(f"Error logging activity for {user_id}: {e}")
+            return False
+
+    def _period_start(self, period: str):
+        now = datetime.utcnow()
+        if period == "daily":
+            return datetime(now.year, now.month, now.day)
+        if period == "weekly":
+            return now - timedelta(days=7)
+        if period == "monthly":
+            return now - timedelta(days=30)
+        return None  # alltime
+
+    async def get_leaderboard(self, period: str = "alltime", limit: int = 10) -> list:
+        """
+        Top users by files sequenced for a period: 'daily' | 'weekly' | 'monthly' | 'alltime'.
+        Returns [{'_id': user_id, 'mention': str, 'count': int}, ...]
+        """
+        pipeline = []
+        start = self._period_start(period)
+        if start:
+            pipeline.append({"$match": {"timestamp": {"$gte": start}}})
+        pipeline += [
+            {"$group": {"_id": "$user_id", "count": {"$sum": "$count"}, "mention": {"$last": "$mention"}}},
+            {"$sort": {"count": -1}},
+            {"$limit": limit}
+        ]
+        try:
+            return await self.activity_log.aggregate(pipeline).to_list(length=limit)
+        except Exception as e:
+            logging.error(f"Error getting {period} leaderboard: {e}")
+            return []
+
+    async def get_user_period_count(self, user_id: int, period: str = "alltime") -> int:
+        """Total files sequenced by a user within a period (0 if none)."""
+        match = {"user_id": int(user_id)}
+        start = self._period_start(period)
+        if start:
+            match["timestamp"] = {"$gte": start}
+        try:
+            result = await self.activity_log.aggregate([
+                {"$match": match},
+                {"$group": {"_id": None, "count": {"$sum": "$count"}}}
+            ]).to_list(length=1)
+            return result[0]["count"] if result else 0
+        except Exception as e:
+            logging.error(f"Error getting period count for {user_id}: {e}")
+            return 0
 
     # ==================== ADMIN FUNCTIONS ====================
 

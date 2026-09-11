@@ -7,7 +7,7 @@ import html as html_lib
 from datetime import datetime
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import Message, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
 from pyrogram.errors import FloodWait, MessageNotModified
 from pyrogram.enums import ParseMode, ChatAction, ChatMemberStatus
 from pyrogram.raw import types as raw_types, functions as raw_functions
@@ -33,6 +33,7 @@ EXCLUDED_COMMANDS = [
     "ban", "unban", "banned",
     "broadcast", "stats", "status",
     "fsub_mode", "addchnl", "delchnl", "listchnl",
+    "dashboard", "admindash",
 ]
 
 # Placeholders supported inside a user's caption template.
@@ -66,22 +67,38 @@ EPISODE_GROUPED_MODES = {"All", "AllSQE", "Episode"}
 # proactive delay per file is the standard way to avoid tripping that limit
 # in the first place, so 100+ files finish faster overall (fewer/shorter
 # forced waits) rather than slower. Tune via env if needed.
-SEND_PACING_DELAY = float(os.environ.get("SEQUENCE_SEND_DELAY", "0.35"))
+SEND_PACING_DELAY = float(os.environ.get("SEQUENCE_SEND_DELAY", "0.45"))
 
 # ==================== FLOODWAIT HANDLER ====================
 
-async def handle_floodwait(func, *args, **kwargs):
+async def handle_floodwait(func, *args, _progress_msg=None, **kwargs):
     while True:
         try:
             return await func(*args, **kwargs)
         except FloodWait as e:
+            wait_for = e.value + 1
+            if _progress_msg is not None:
+                try:
+                    await _progress_msg.edit_text(
+                        f"⏳ <b>Telegram rate limit hit</b>\nResuming in {wait_for}s...",
+                        parse_mode=ParseMode.HTML
+                    )
+                except Exception:
+                    pass
             logger.warning(f"FloodWait: Sleeping for {e.value} seconds...")
-            await asyncio.sleep(e.value + 1)
+            await asyncio.sleep(wait_for)
         except MessageNotModified:
             break
         except Exception as e:
             logger.error(f"Error in operation: {e}")
             raise e
+
+
+def build_progress_bar(current, total, length=12):
+    """Small text progress bar used for live sequencing/broadcast progress."""
+    pct = (current / total) if total else 0
+    filled = int(length * pct)
+    return f"{'█' * filled}{'░' * (length - filled)} {int(pct * 100)}%"
 
 # ==================== RAW-API MESSAGE COPY ====================
 # Bot-API-level sending (send_video/copy_message) RECONSTRUCTS the outgoing
@@ -95,8 +112,18 @@ async def handle_floodwait(func, *args, **kwargs):
 # message object, so every attribute -- cover included -- survives
 # regardless of whether this pyrofork build knows about that field at all.
 # We then edit the caption on the resulting message to apply our template.
+#
+# NOTE: an earlier attempt at cover preservation used a download-the-cover
+# -then-reupload-via-send_video(cover=<path>) approach. That path depends
+# on this pyrofork build exposing message.video.cover at *collection* time
+# (unreliable — builds that don't expose it never even try), and on
+# send_video's 'cover' kwarg being honored end-to-end. raw_forward_copy
+# sidesteps both problems entirely by letting Telegram's servers duplicate
+# the message, so it's used unconditionally for every video with a known
+# source rather than being gated on cover detection.
 
-async def raw_forward_copy(client, target_chat, source_chat_id, source_message_id, protect_content=False):
+async def raw_forward_copy(client, target_chat, source_chat_id, source_message_id,
+                            protect_content=False, progress_msg=None):
     """
     Server-side copy via raw MTProto messages.ForwardMessages(drop_author=True).
     Returns the new message id in target_chat, or raises on failure.
@@ -114,7 +141,8 @@ async def raw_forward_copy(client, target_chat, source_chat_id, source_message_i
             to_peer=peer,
             drop_author=True,
             noforwards=protect_content or None
-        )
+        ),
+        _progress_msg=progress_msg
     )
 
     new_msg_id = None
@@ -252,7 +280,7 @@ def build_caption(template, file_info):
     return rendered.strip() if rendered and rendered.strip() else filename
 
 
-async def send_video_with_cover(client, target_chat, file_info, caption_text):
+async def send_video_with_cover(client, target_chat, file_info, caption_text, progress_msg=None):
     """
     Sends a video while preserving Telegram's distinct 'cover' field
     (Bot API 8.1+, NOT the same as the auto-generated 'thumb' — a file can
@@ -262,14 +290,6 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
     duplicates the original message's raw attributes (cover included)
     without pyrofork needing to understand or pass that field at all, then
     edit_message_caption() applies our own caption template on top.
-
-    This replaces the old download-the-cover-locally-and-reupload-it-via-
-    send_video(cover=<path>) approach. That only worked when (a) this
-    pyrofork build even exposed message.video.cover in the first place,
-    and (b) send_video's 'cover' kwarg was actually honored by the
-    connected Bot API layer — both of which are version-dependent, and
-    were the real reason covers were getting dropped: builds that don't
-    expose the attribute never attempted to preserve it at all.
 
     Degrades: raw forward-copy -> copy_message -> plain send_video
     (file_id), so a raw-API hiccup never loses the file — just the cover
@@ -281,14 +301,17 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
 
     if source_chat_id and source_message_id:
         try:
-            new_msg_id = await raw_forward_copy(client, target_chat, source_chat_id, source_message_id)
+            new_msg_id = await raw_forward_copy(
+                client, target_chat, source_chat_id, source_message_id, progress_msg=progress_msg
+            )
             try:
                 return await handle_floodwait(
                     client.edit_message_caption,
                     chat_id=target_chat,
                     message_id=new_msg_id,
                     caption=caption_text,
-                    parse_mode=ParseMode.HTML
+                    parse_mode=ParseMode.HTML,
+                    _progress_msg=progress_msg
                 )
             except Exception as edit_err:
                 # Copy already succeeded (cover preserved) — don't re-send
@@ -300,7 +323,8 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
             try:
                 return await handle_floodwait(
                     client.copy_message, chat_id=target_chat, from_chat_id=source_chat_id,
-                    message_id=source_message_id, caption=caption_text, parse_mode=ParseMode.HTML
+                    message_id=source_message_id, caption=caption_text, parse_mode=ParseMode.HTML,
+                    _progress_msg=progress_msg
                 )
             except Exception as copy_err:
                 logger.warning(f"[COVER] copy_message fallback also failed: {copy_err}")
@@ -308,7 +332,7 @@ async def send_video_with_cover(client, target_chat, file_info, caption_text):
     if file_id:
         return await handle_floodwait(
             client.send_video, chat_id=target_chat, video=file_id,
-            caption=caption_text, parse_mode=ParseMode.HTML
+            caption=caption_text, parse_mode=ParseMode.HTML, _progress_msg=progress_msg
         )
 
     raise RuntimeError("No source message or file_id available to send this video")
@@ -544,20 +568,13 @@ async def collect_files(client: Client, message: Message):
                 # 'cover' (Bot API 8.1+) is Telegram's dedicated video-cover
                 # field, DISTINCT from 'thumb' — a file can have a cover with
                 # no thumb at all. getattr with a default keeps this safe on
-                # pyrofork builds that don't expose it yet.
+                # pyrofork builds that don't expose it yet. Kept here for
+                # diagnostics/back-compat only — sending no longer branches
+                # on it, since raw_forward_copy preserves the cover
+                # server-side regardless of what this build detects.
                 vid_cover_obj = getattr(message.video, 'cover', None)
                 vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
                 vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
-
-                # TEMP DIAGNOSTIC — remove once cover is confirmed working.
-                # Tells us definitively whether pyrofork even exposes a
-                # 'cover' attribute on this Video object, and what it holds.
-                logger.debug(
-                    f"[COVER DEBUG] file={filename!r} "
-                    f"has_cover_attr={hasattr(message.video, 'cover')} "
-                    f"cover_obj={vid_cover_obj!r} cover_file_id={vid_cover!r} "
-                    f"thumb_file_id={vid_thumb!r}"
-                )
 
                 files.append({
                     'filename': filename,
@@ -612,7 +629,7 @@ async def collect_files(client: Client, message: Message):
             session['last_chat_action'] = now_ts
             try:
                 if message.document or message.video or message.audio:
-                    await message.reply_chat_action(ChatAction.UPLOAD_DOCUMENT)
+                    await message.reply_chat_action(ChatAction.PLAYING)
                 else:
                     await message.reply_chat_action(ChatAction.TYPING)
             except Exception as ca_err:
@@ -807,7 +824,11 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
         is_dump_mode = bool(dump_channel)
         target_chat = dump_channel if is_dump_mode else chat_id
 
-        await notify(f"📤 Sᴇɴᴅɪɴɢ {total_files} ғɪʟᴇs ɪɴ sᴇǫᴜᴇɴᴄᴇ...", parse_mode=ParseMode.HTML)
+        progress_msg = await notify(
+            f"📤 <b>Sending {total_files} files...</b>\n\n{build_progress_bar(0, total_files)}\n0/{total_files}",
+            parse_mode=ParseMode.HTML
+        )
+        last_progress_edit = 0.0
 
         sent_count = 0
         failed_files = []
@@ -853,13 +874,11 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                 if file_format == 'video' and source_chat_id and source_message_id:
                     # Route ALL videos with a known source through the
                     # raw-API copy path — it preserves the 'cover' field
-                    # unconditionally (server-side), so this is no longer
-                    # gated on file_info['cover'] being detected at
-                    # collection time. That detection depended on this
-                    # pyrofork build exposing message.video.cover, which
-                    # was the actual bug: builds that don't expose it never
-                    # even tried to preserve the cover.
-                    await send_video_with_cover(client, target_chat, file_info, caption_text)
+                    # unconditionally (server-side), so this is NOT gated
+                    # on file_info['cover'] being detected at collection
+                    # time (that detection is unreliable across pyrofork
+                    # builds and was the original cause of dropped covers).
+                    await send_video_with_cover(client, target_chat, file_info, caption_text, progress_msg=progress_msg)
 
                 elif source_chat_id and source_message_id and file_format in ['document', 'video', 'audio']:
                     # copy_message asks Telegram's own servers to duplicate the
@@ -872,7 +891,8 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                         from_chat_id=source_chat_id,
                         message_id=source_message_id,
                         caption=caption_text,
-                        parse_mode=ParseMode.HTML
+                        parse_mode=ParseMode.HTML,
+                        _progress_msg=progress_msg
                     )
                 elif file_id and file_format in ['document', 'video', 'audio']:
                     # Fallback for any older session data collected before this
@@ -880,23 +900,40 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                     if file_format == 'document':
                         await handle_floodwait(
                             client.send_document, chat_id=target_chat, document=file_id,
-                            caption=caption_text, parse_mode=ParseMode.HTML
+                            caption=caption_text, parse_mode=ParseMode.HTML, _progress_msg=progress_msg
                         )
                     elif file_format == 'video':
                         await handle_floodwait(
                             client.send_video, chat_id=target_chat, video=file_id,
-                            caption=caption_text, parse_mode=ParseMode.HTML
+                            caption=caption_text, parse_mode=ParseMode.HTML, _progress_msg=progress_msg
                         )
                     elif file_format == 'audio':
                         await handle_floodwait(
                             client.send_audio, chat_id=target_chat, audio=file_id,
-                            caption=caption_text, parse_mode=ParseMode.HTML
+                            caption=caption_text, parse_mode=ParseMode.HTML, _progress_msg=progress_msg
                         )
                 else:
-                    await handle_floodwait(client.send_message, chat_id=target_chat, text=f"📄 {filename}")
+                    await handle_floodwait(client.send_message, chat_id=target_chat, text=f"📄 {filename}", _progress_msg=progress_msg)
 
                 sent_count += 1
                 await asyncio.sleep(SEND_PACING_DELAY)
+
+                # Throttled live progress update (~every 2s or every 10 files,
+                # whichever comes first) — separate from the per-file pacing
+                # delay above so it doesn't add its own FloodWait risk.
+                now_ts = time.time()
+                if progress_msg and (now_ts - last_progress_edit >= 2 or sent_count % 10 == 0 or sent_count == total_files):
+                    last_progress_edit = now_ts
+                    try:
+                        await progress_msg.edit_text(
+                            f"📤 <b>Sending {total_files} files...</b>\n\n"
+                            f"{build_progress_bar(sent_count, total_files)}\n{sent_count}/{total_files}",
+                            parse_mode=ParseMode.HTML
+                        )
+                    except MessageNotModified:
+                        pass
+                    except Exception as prog_err:
+                        logger.debug(f"Progress edit skipped: {prog_err}")
 
             except Exception as file_error:
                 logger.error(f"Failed to send file {filename}: {file_error}")
@@ -908,6 +945,14 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
                 await handle_floodwait(client.send_sticker, chat_id=target_chat, sticker=episode_sticker)
             except Exception as ep_st_err:
                 logger.error(f"Failed to send final episode sticker: {ep_st_err}")
+
+        # Progress bar has done its job — the completion message below covers
+        # the final summary, so no need to leave this one cluttering the chat.
+        if progress_msg:
+            try:
+                await progress_msg.delete()
+            except Exception:
+                pass
 
         elapsed_sec = int(time.time() - start_time)
         time_taken_str = time.strftime('%H:%M:%S', time.gmtime(elapsed_sec))
@@ -949,6 +994,7 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
             },
             upsert=True
         )
+        await CosmicBotz.log_activity(user_id, user_mention, sent_count)
 
         if user_id in user_sessions:
             del user_sessions[user_id]
@@ -1211,9 +1257,12 @@ async def mystats_cmd(client: Client, message: Message):
             if isinstance(last_activity, datetime) else "N/A"
         )
 
+        milestones = [(1000, "💎"), (500, "🏆"), (250, "🥇"), (100, "🏅"), (50, "⭐"), (10, "🔰")]
+        badge = next((emoji for threshold, emoji in milestones if total_files >= threshold), "🆕")
+
         text = (
             "<b>📊 Yᴏᴜʀ Sᴛᴀᴛs</b>\n\n"
-            f"📁 <b>Files Sequenced:</b> <code>{total_files:,}</code>\n"
+            f"📁 <b>Files Sequenced:</b> <code>{total_files:,}</code> {badge}\n"
             f"📦 <b>Batches Completed:</b> <code>{total_batches:,}</code>\n"
             f"⭐ <b>Favorite Mode:</b> {fav_mode}\n"
             f"📅 <b>Member Since:</b> <code>{join_date}</code>\n"
@@ -1226,73 +1275,73 @@ async def mystats_cmd(client: Client, message: Message):
         await handle_floodwait(message.reply_text, "❌ An error occurred.", parse_mode=ParseMode.HTML)
 
 
-# ==================== LEADERBOARD ====================
+# ==================== LEADERBOARD (Daily / Weekly / Monthly / All-time) ====================
+
+PERIOD_LABELS = {"daily": "Today", "weekly": "This Week", "monthly": "This Month", "alltime": "All-Time"}
+
+
+async def build_leaderboard_view(user_id: int, period: str = "alltime"):
+    label = PERIOD_LABELS.get(period, "All-Time")
+    top_users = await CosmicBotz.get_leaderboard(period, limit=10)
+    medals = ["🥇", "🥈", "🥉"]
+
+    if not top_users:
+        text = f"📊 <b>{label} Leaderboard</b>\n\n❌ No activity for this period yet."
+    else:
+        text = f"📊 <b>Top 10 — {label}</b>\n\n"
+        user_in_list = False
+        for idx, u in enumerate(top_users, 1):
+            rank = medals[idx - 1] if idx <= 3 else f"{idx}."
+            mention = u.get("mention") or f"User {u['_id']}"
+            text += f"{rank} {mention}\n    └ <b>{u['count']:,}</b> files\n\n"
+            if u["_id"] == user_id:
+                user_in_list = True
+
+        text += "─────────────────\n"
+        if user_in_list:
+            text += "🎉 <b>You're on the board!</b>"
+        else:
+            my_count = await CosmicBotz.get_user_period_count(user_id, period)
+            text += (f"📍 You: <b>{my_count:,}</b> files this period" if my_count
+                      else "📍 No activity in this period yet")
+
+    row = []
+    for p in ["daily", "weekly", "monthly", "alltime"]:
+        btn_text = PERIOD_LABELS[p] + (" •" if p == period else "")
+        row.append(InlineKeyboardButton(btn_text, callback_data=f"lb_{p}"))
+    buttons = [row, [InlineKeyboardButton("Close ✖️", callback_data="close")]]
+
+    return text, InlineKeyboardMarkup(buttons)
+
 
 @Client.on_message(filters.command("leaderboard") & filters.private)
 @check_ban
 @check_fsub
 async def leaderboard_cmd(client: Client, message: Message):
     try:
-        user_id = message.from_user.id
-
-        cursor = CosmicBotz.col.find(
-            {"sequence_count": {"$exists": True, "$gt": 0}}
-        ).sort("sequence_count", -1).limit(10)
-
-        top_users = await cursor.to_list(length=10)
-
-        if not top_users:
-            await handle_floodwait(
-                message.reply_text,
-                "📊 <b>Sequence Leaderboard</b>\n\n❌ No user data found yet!",
-                parse_mode=ParseMode.HTML
-            )
-            return
-
-        text = "📊 <b>Top 10 Sequence Users</b>\n\n"
-        medals = ["🥇", "🥈", "🥉"]
-
-        current_user_rank = None
-
-        for idx, user in enumerate(top_users, 1):
-            count = user.get("sequence_count", 0)
-            mention = user.get("mention", f"User {user['_id']}")
-
-            if user["_id"] == user_id:
-                current_user_rank = idx
-
-            rank = medals[idx-1] if idx <= 3 else f"{idx}."
-            text += f"{rank} {mention}\n"
-            text += f"    └ <b>{count:,}</b> files sequenced\n\n"
-
-        if current_user_rank is None:
-            user_doc = await CosmicBotz.col.find_one({"_id": user_id})
-            user_count = user_doc.get("sequence_count", 0) if user_doc else 0
-
-            if user_count > 0:
-                rank = await CosmicBotz.col.count_documents({
-                    "sequence_count": {"$gt": user_count}
-                }) + 1
-                text += "─────────────────\n"
-                text += f"📍 <b>Your Rank:</b> #{rank}\n"
-                text += f"    └ <b>{user_count:,}</b> files sequenced"
-            else:
-                text += "─────────────────\n"
-                text += "📍 You haven't sequenced any files yet!"
-        else:
-            text += "─────────────────\n"
-            text += f"🎉 <b>You're ranked #{current_user_rank}!</b>"
-
+        text, kb = await build_leaderboard_view(message.from_user.id, "alltime")
         await handle_floodwait(
-            message.reply_text,
-            text,
-            parse_mode=ParseMode.HTML,
-            disable_web_page_preview=True
+            message.reply_text, text, reply_markup=kb, parse_mode=ParseMode.HTML,
+            link_preview_options=LinkPreviewOptions(is_disabled=True)
         )
-
     except Exception as e:
         logger.error(f"Leaderboard error: {e}", exc_info=True)
-        await handle_floodwait(
-            message.reply_text,
-            "❌ Error loading leaderboard."
-        )
+        await handle_floodwait(message.reply_text, "❌ Error loading leaderboard.")
+
+
+@Client.on_callback_query(filters.regex(r"^lb_(daily|weekly|monthly|alltime)$"))
+async def leaderboard_period_callback(client: Client, cq):
+    period = cq.data.split("_", 1)[1]
+    try:
+        text, kb = await build_leaderboard_view(cq.from_user.id, period)
+        try:
+            await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+        except MessageNotModified:
+            pass
+        await cq.answer()
+    except Exception as e:
+        logger.error(f"Leaderboard period callback error: {e}", exc_info=True)
+        try:
+            await cq.answer("Error loading leaderboard.", show_alert=True)
+        except Exception:
+            pass
