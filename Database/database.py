@@ -34,7 +34,11 @@ class Master:
         # Per-user sorting mode storage
         self.sequence_mode = self.database['sequence_mode']
 
-        # One row per completed batch — powers daily/weekly/monthly/alltime leaderboards
+        # One row per completed batch — powers daily/weekly/monthly leaderboards.
+        # NOTE: alltime leaderboard does NOT read from this collection — see
+        # get_leaderboard()/get_user_period_count() below. It reads directly
+        # from user_data.sequence_count instead, since that counter has been
+        # accurate since before activity_log existed and needs no backfill.
         self.activity_log = self.database['activity_log']
 
         # Backward compatibility alias
@@ -284,7 +288,11 @@ class Master:
     # ==================== ACTIVITY LOG / PERIOD LEADERBOARDS ====================
 
     async def log_activity(self, user_id: int, mention: str, count: int) -> bool:
-        """Record one completed batch — used for daily/weekly/monthly/alltime leaderboards."""
+        """
+        Record one completed batch — used for the daily/weekly/monthly
+        leaderboards only. The alltime leaderboard does NOT depend on this;
+        it reads user_data.sequence_count directly (see get_leaderboard).
+        """
         if count <= 0:
             return False
         try:
@@ -299,21 +307,54 @@ class Master:
             logging.error(f"Error logging activity for {user_id}: {e}")
             return False
 
+    # All activity_log timestamps are stored as naive UTC (datetime.utcnow()).
+    # "daily" is a calendar-day boundary, so it must be computed in the
+    # user's local timezone and converted back to UTC — otherwise "today"
+    # resets at UTC midnight instead of local midnight. Weekly/monthly are
+    # rolling windows (now - N days), so they're unaffected by timezone.
+    LOCAL_TZ_OFFSET = timedelta(hours=5, minutes=30)  # UTC+5:30 (IST)
+
     def _period_start(self, period: str):
-        now = datetime.utcnow()
+        now_utc = datetime.utcnow()
         if period == "daily":
-            return datetime(now.year, now.month, now.day)
+            now_local = now_utc + self.LOCAL_TZ_OFFSET
+            local_midnight = datetime(now_local.year, now_local.month, now_local.day)
+            return local_midnight - self.LOCAL_TZ_OFFSET  # back to UTC for comparison
         if period == "weekly":
-            return now - timedelta(days=7)
+            return now_utc - timedelta(days=7)
         if period == "monthly":
-            return now - timedelta(days=30)
-        return None  # alltime
+            return now_utc - timedelta(days=30)
+        return None  # alltime — unused for period filtering, see get_leaderboard
 
     async def get_leaderboard(self, period: str = "alltime", limit: int = 10) -> list:
         """
         Top users by files sequenced for a period: 'daily' | 'weekly' | 'monthly' | 'alltime'.
         Returns [{'_id': user_id, 'mention': str, 'count': int}, ...]
+
+        'alltime' reads straight from user_data.sequence_count — the same
+        running counter /mystats uses — since that's been accurate since
+        before activity_log existed and needs no backfill. Only the
+        time-bucketed periods (daily/weekly/monthly) use activity_log,
+        because sequence_count has no timestamp granularity to filter by.
         """
+        if period == "alltime":
+            try:
+                cursor = self.user_data.find(
+                    {"sequence_count": {"$exists": True, "$gt": 0}}
+                ).sort("sequence_count", -1).limit(limit)
+                docs = await cursor.to_list(length=limit)
+                return [
+                    {
+                        "_id": d["_id"],
+                        "mention": d.get("mention") or f"User {d['_id']}",
+                        "count": d.get("sequence_count", 0)
+                    }
+                    for d in docs
+                ]
+            except Exception as e:
+                logging.error(f"Error getting alltime leaderboard: {e}")
+                return []
+
         pipeline = []
         start = self._period_start(period)
         if start:
@@ -330,7 +371,19 @@ class Master:
             return []
 
     async def get_user_period_count(self, user_id: int, period: str = "alltime") -> int:
-        """Total files sequenced by a user within a period (0 if none)."""
+        """
+        Total files sequenced by a user within a period (0 if none).
+        'alltime' reads user_data.sequence_count directly — see
+        get_leaderboard() for why.
+        """
+        if period == "alltime":
+            try:
+                doc = await self.user_data.find_one({"_id": int(user_id)}, {"sequence_count": 1})
+                return doc.get("sequence_count", 0) if doc else 0
+            except Exception as e:
+                logging.error(f"Error getting alltime count for {user_id}: {e}")
+                return 0
+
         match = {"user_id": int(user_id)}
         start = self._period_start(period)
         if start:

@@ -1042,6 +1042,10 @@ async def cancel_cmd(client: Client, message: Message):
 
 
 # ==================== DUMP CHANNEL COMMANDS ====================
+# NOTE: filters.command() takes a *list* for aliases — filters.command("a", "b")
+# does NOT add "b" as an alias, it overwrites the `prefixes` kwarg instead,
+# which breaks matching for both names. Every multi-alias command below
+# must use the list form: filters.command(["a", "b"]).
 
 @Client.on_message(filters.command(["add_dump", "adddump"]) & filters.private)
 @check_ban
