@@ -2,7 +2,7 @@ from config import *
 from Plugins.callbacks import *
 from Plugins.start import *
 from Database.database import CosmicBotz
-from pyrogram.types import Message, ChatMemberUpdated, ChatJoinRequest, InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
+from pyrogram.types import Message, ChatMemberUpdated, ChatJoinRequest, InlineKeyboardButton, InlineKeyboardMarkup
 from pyrogram import Client, filters
 from pyrogram.errors import PeerIdInvalid, FloodWait, InputUserDeactivated, UserIsBlocked, RPCError
 from pyrogram.enums import ChatType, ChatMemberStatus, ParseMode
@@ -500,7 +500,7 @@ async def list_force_sub_channels(client: Client, message: Message):
         except Exception:
             result += f"<b>•</b> <code>{ch_id}</code> — <i>Unavailable</i>\n"
 
-    await temp.edit(result, link_preview_options=LinkPreviewOptions(is_disabled=True), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Close ✖️", callback_data="close")]]))
+    await temp.edit(result, disable_web_page_preview=True, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Close ✖️", callback_data="close")]]))
 
 @Client.on_message(filters.command("broadcast") & filters.private & admin)
 async def broadcast_handler(client: Client, m: Message):
