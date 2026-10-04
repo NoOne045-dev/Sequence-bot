@@ -18,14 +18,20 @@ pending_settings = {}
 
 async def build_settings_view(user_id):
     dump_channel = await CosmicBotz.get_dump_channel(user_id)
+    dump_paused = await CosmicBotz.is_dump_paused(user_id)
     sticker = await CosmicBotz.get_episode_sticker(user_id)
     caption_template = await CosmicBotz.get_caption_template(user_id)
 
     caption_preview = f"<code>{html_lib.escape(caption_template)}</code>" if caption_template else "Default (uses each file's own caption)"
 
+    if dump_channel:
+        dump_status = f"<code>{dump_channel}</code> (<b>Paused ⏸️</b>)" if dump_paused else f"<code>{dump_channel}</code> (<b>Active ✅</b>)"
+    else:
+        dump_status = "Not set"
+
     text = (
         "<b>⚙️ Yᴏᴜʀ Sᴇᴛᴛɪɴɢs</b>\n\n"
-        f"📍 <b>Dump Channel:</b> <code>{dump_channel if dump_channel else 'Not set'}</code>\n"
+        f"📍 <b>Dump Channel:</b> {dump_status}\n"
         f"🎟️ <b>Episode Sticker:</b> {'Set ✅' if sticker else 'Not set'}\n"
         f"📝 <b>Caption Template:</b> {caption_preview}\n\n"
         "<i>Episode sticker is sent at each episode boundary when sequencing "
@@ -36,6 +42,8 @@ async def build_settings_view(user_id):
 
     dump_row = [InlineKeyboardButton("📍 Dump Channel", callback_data="stg_set_dump")]
     if dump_channel:
+        pause_btn_text = "▶️ Resume" if dump_paused else "⏸️ Pause"
+        dump_row.append(InlineKeyboardButton(pause_btn_text, callback_data="stg_toggle_dump"))
         dump_row.append(InlineKeyboardButton("🗑️", callback_data="stg_rem_dump"))
     rows.append(dump_row)
 
@@ -81,6 +89,14 @@ async def settings_panel_callback(client: Client, cq: CallbackQuery):
                 parse_mode=ParseMode.HTML
             )
 
+        elif data == "stg_toggle_dump":
+            pending_settings.pop(user_id, None)
+            new_state = await CosmicBotz.toggle_dump_paused(user_id)
+            status_msg = "Dump channel output PAUSED ⏸️" if new_state else "Dump channel output RESUMED ▶️"
+            await cq.answer(status_msg, show_alert=True)
+            text, kb = await build_settings_view(user_id)
+            await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
+
         elif data == "stg_rem_dump":
             pending_settings.pop(user_id, None)
             await CosmicBotz.remove_dump_channel(user_id)
@@ -89,6 +105,7 @@ async def settings_panel_callback(client: Client, cq: CallbackQuery):
             await cq.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
         elif data == "stg_set_sticker":
+
             pending_settings[user_id] = {'action': 'sticker', 'chat_id': cq.message.chat.id, 'message_id': cq.message.id}
             await cq.answer()
             await cq.message.edit_text(

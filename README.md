@@ -1,84 +1,149 @@
 <div align="center">
 
-# 🤖 Telegram File Sequence Bot
+# 🤖 Advanced Telegram File Sequence Bot
 
 <img src="https://img.shields.io/badge/Telegram-Bot-blue?style=for-the-badge&logo=telegram" alt="Telegram Bot">
-<img src="https://img.shields.io/badge/Python-3.9+-yellow?style=for-the-badge&logo=python" alt="Python">
+<img src="https://img.shields.io/badge/Python-3.10+-yellow?style=for-the-badge&logo=python" alt="Python">
+<img src="https://img.shields.io/badge/Pyrogram-v2.0+-blueviolet?style=for-the-badge&logo=telegram" alt="Pyrogram">
 <img src="https://img.shields.io/badge/MongoDB-Database-green?style=for-the-badge&logo=mongodb" alt="MongoDB">
 <img src="https://img.shields.io/badge/License-MIT-red?style=for-the-badge" alt="License">
 
-### *A powerful Telegram bot for managing file sequencing with force subscription capabilities*
+### *An ultra-fast, intelligent Telegram bot designed for seamless file sorting, missing episode detection, dump channel routing with pause/resume support, custom caption templates, cover preservation, and multi-period leaderboards.*
 
-[Features](#-features) • [Installation](#-installation) • [Commands](#-commands) • [Deployment](#-deployment) • [Support](#-support)
+[Features](#-key-features) • [Sorting Modes](#-sorting-modes) • [Commands](#-bot-commands) • [Environment Variables](#%EF%B8%8F-environment-variables) • [Deployment](#-deployment-guide) • [Credits](#-credits--acknowledgments)
 
 </div>
 
 ---
 
-## ✨ Features
+## ✨ Key Features
 
-<table>
-<tr>
-<td width="50%">
-
-### 📁 File Management
-- **Smart Sequencing**: Sort files by Quality, Episode, or Season
-- **Batch Rename**: Rename multiple files at once
-- **Auto Organization**: Automatic file categorization
-
-</td>
-<td width="50%">
-
-### 🔐 Access Control
-- **Force Subscription**: Require channel membership
-- **Admin System**: Multi-level admin management
-- **User Ban System**: Block unwanted users
-
-</td>
-</tr>
-<tr>
-<td width="50%">
-
-### 📊 Database
-- **MongoDB Integration**: Persistent data storage
-- **User Tracking**: Monitor all bot users
-- **Statistics**: Detailed usage analytics
-
-</td>
-<td width="50%">
-
-### 📢 Broadcasting
-- **Mass Messaging**: Send to all users
-- **Admin Notifications**: Real-time alerts
-- **Custom Messages**: Personalized content
-
-</td>
-</tr>
-</table>
+### 📁 Advanced File Sequencing
+- **Smart Regex Parsing**: Extracts show titles, season numbers (`S01`), episode numbers (`E01`-`E9999`), and quality tags (`480p`, `720p`, `1080p`, `HDRip`, `2K`, `4K`).
+- **5 Sorting Modes**:
+  - **Quality**: Sort strictly by resolution order.
+  - **All (S→E→Q)**: Season → Episode → Quality (Classic series layout).
+  - **All [S→Q→E]**: Season → Quality → Episode.
+  - **Episode**: Sort purely by episode number.
+  - **Season**: Sort purely by season number.
+- **Batch Forwarding Support**: Gracefully receives forwarded batches of 100+ files with quiet debouncing and zero message spam.
+- **Queue Arrival Preservation**: Files remain strictly in the order received during reception until sorting executes at `/esequence`.
+- **Live Missing Files Alert**: Automatically scans received batches for missing episode numbers or quality variants and alerts the user in real-time **before** sequencing starts.
+- **Cover Art & Thumbnail Preservation**: Uses MTProto server-side copy (`messages.ForwardMessages`) to ensure Telegram 8.1+ video covers and thumbnails are preserved without re-encoding.
 
 ---
 
-## 🚀 Installation
+### 📍 Dump Channel Routing with Pause / Resume
+- **Custom Dump Channel**: Route all sequenced outputs directly to your private channel or group.
+- **Pause & Resume**: Toggle output routing directly inside `/settings` using **⏸️ Pause** / **▶️ Resume**.
+  - When **Active**, outputs deliver directly to your dump channel.
+  - When **Paused**, outputs automatically redirect to your private DM without deleting your saved channel configuration.
 
-### Prerequisites
+---
 
-```bash
-Python 3.9+
-MongoDB Database
-Telegram API Credentials
+### 📝 Dynamic Captions & Episode Separators
+- **Custom Caption Template**: Use placeholders like `{caption}`, `{filename}`, `{show_title}`, `{season}`, `{episode}`, and `{quality}` formatted in HTML.
+- **Episode Boundary Stickers**: Send a custom sticker at each episode transition in grouped modes.
+
+---
+
+### 📊 Activity Leaderboards & Personal Stats
+- **Multi-Period Leaderboards**: View top users for **Today** (`daily`), **This Week** (`weekly`), **This Month** (`monthly`), and **All-Time** (`alltime`).
+- **Personal Stats (`/mystats`)**: Track total files sequenced, total batches completed, favorite mode, and join date.
+
+---
+
+### 🔐 Channel Access Control & Admin Tools
+- **Multi-Channel ForceSub**: Require users to join up to multiple mandatory channels before using the bot.
+- **Admin Dashboard & Controls**: Add/remove admins, ban/unban users, broadcast mass messages, and check system status.
+
+---
+
+## 📝 Bot Commands
+
+### 👤 User Commands
+
+| Command | Description |
+|---------|-------------|
+| `/start` | Start the bot and view main menu |
+| `/ssequence` | Begin a file sequencing session |
+| `/esequence` | Complete sequencing and output files |
+| `/mode` | Change current file sorting mode |
+| `/cancel` | Cancel current active session or setting |
+| `/settings` | Open interactive settings panel (Dump channel, Pause toggle, Sticker, Caption) |
+| `/add_dump` | Save custom dump channel ID or username |
+| `/del_dump` | Remove saved dump channel |
+| `/dump_info` | View current dump channel details |
+| `/set_caption` | Set custom caption template |
+| `/del_caption` | Remove caption template |
+| `/caption_info` | View current caption template & placeholders |
+| `/leaderboard` | View user activity leaderboards (Today, Week, Month, All-Time) |
+| `/mystats` | Check personal sequencing statistics |
+| `/help` | View help and usage instructions |
+| `/about` | View bot credits and information |
+
+---
+
+### 👑 Admin & ForceSub Commands
+
+| Command | Description |
+|---------|-------------|
+| `/dashboard` | View bot overview & system statistics |
+| `/add_admin <user_id>` | Promote user to bot administrator |
+| `/deladmin <user_id>` | Demote administrator |
+| `/admins` | List active bot administrators |
+| `/ban <user_id> [reason]` | Ban user from using the bot |
+| `/unban <user_id>` | Unban user |
+| `/banned` | List all banned users |
+| `/broadcast` | Broadcast message to all registered users |
+| `/fsub_mode` | View/toggle ForceSub channels status |
+| `/addchnl <chat_id>` | Add mandatory subscription channel |
+| `/delchnl <chat_id>` | Remove mandatory subscription channel |
+| `/listchnl` | List configured ForceSub channels |
+
+---
+
+## ⚙️ Environment Variables
+
+Create a `.env` file in the root directory:
+
+```env
+# Telegram API Credentials (from my.telegram.org)
+API_ID=123456
+API_HASH=your_api_hash_here
+BOT_TOKEN=1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ
+OWNER_ID=123456789
+
+# Database Configuration (MongoDB Atlas or local)
+DB_URI=mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true&w=majority
+DB_NAME=SequenceBot
+
+# Optional Customizations & Links
+DATABASE_CHANNEL=-1001234567890
+UPDATES_URL=https://t.me/CosmicBotz
+SUPPORT_URL=https://t.me/JustThreshold
+ADMIN_URL=https://t.me/JustThreshold
+START_PIC=https://ibb.co/84T5kmF7
+FSUB_PIC=https://ibb.co/0RK2DVc5
+PORT=8080
 ```
 
-### Quick Start
+---
+
+## 🚀 Deployment Guide
+
+### Option 1: Local System / Linux VPS
 
 ```bash
 # Clone the repository
-git clone https://github.com/abhinai2244/SEQUENCE-BOT.git
-
-# Navigate to project directory
-cd SEQUENCE-BOT
+git clone https://github.com/NoOne045-dev/Sequence-bot.git
+cd Sequence-bot
 
 # Install dependencies
 pip install -r requirements.txt
+
+# Create .env file and set your variables
+nano .env
 
 # Run the bot
 python bot.py
@@ -86,199 +151,41 @@ python bot.py
 
 ---
 
-## ⚙️ Configuration
-
-### Environment Variables
-
-Create a `.env` file in the root directory:
-
-```env
-# Telegram Configuration
-API_ID=your_api_id
-API_HASH=your_api_hash
-BOT_TOKEN=your_bot_token
-OWNER_ID=your_telegram_user_id
-
-# Database Configuration
-DB_URI=mongodb://your_mongodb_uri
-DB_NAME=Rex_sequencebott
-DATABASE_CHANNEL=your_channel_id
-
-# Customization
-FSUB_PIC=https://your_force_sub_image_url
-START_PIC=https://your_start_image_url
-START_MSG=Welcome to the bot!
-ABOUT_MESSAGE=About this bot...
-HELP_MESSAGE=Here's how to use the bot...
-```
-
----
-
-## 📝 Commands
-
-### 👤 User Commands
-
-| Command | Description |
-|---------|-------------|
-| `/start` | Initialize the bot |
-| `/help` | Display help information |
-| `/about` | Learn about the bot |
-
-### 👑 Admin Commands
-
-| Command | Description |
-|---------|-------------|
-| `/add_admin <user_id>` | Grant admin privileges |
-| `/deladmin <user_id>` | Revoke admin privileges |
-| `/admins` | View all administrators |
-| `/ban <user_id> [reason]` | Ban a user from the bot |
-| `/unban <user_id>` | Remove user ban |
-| `/banned` | List all banned users |
-| `/broadcast` | Send message to all users |
-| `/stats` | View bot statistics |
-
-### 🔒 Force Subscription Commands
-
-| Command | Description |
-|---------|-------------|
-| `/addchnl <channel_id>` | Add force sub channel |
-| `/delchnl <channel_id>` | Remove force sub channel |
-| `/listchnl` | List all force sub channels |
-| `/fsub_mode` | Toggle force subscription |
-
----
-
-## 🌐 Deployment
-
-### Deploy on Heroku
-
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
-
-1. Click the deploy button above
-2. Fill in the required environment variables
-3. Deploy and enjoy!
-
-### Deploy on Railway
-
-[![Deploy on Railway](https://railway.app/button.svg)](https://railway.app/new)
-
-1. Click the deploy button
-2. Connect your GitHub repository
-3. Set environment variables
-4. Deploy automatically
-
-### Deploy on VPS
+### Option 2: Docker Container
 
 ```bash
-# Update system
-sudo apt update && sudo apt upgrade -y
+# Build Docker image
+docker build -t sequence-bot .
 
-# Install Python and pip
-sudo apt install python3 python3-pip -y
-
-# Clone and setup
-git clone https://github.com/yourusername/telegram-file-sequence-bot.git
-cd telegram-file-sequence-bot
-pip3 install -r requirements.txt
-
-# Run with screen or tmux
-screen -S bot
-python3 bot.py
+# Run Docker container
+docker run -d --name sequence-bot --env-file .env sequence-bot
 ```
 
 ---
 
-## 📦 Dependencies
+### Option 3: Heroku Deployment
 
-```
-pyrogram
-pyrofork
-pymongo
-python-dotenv
-tgcrypto
-```
+[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy)
+
+1. Fork or clone this repository to GitHub.
+2. Click **Deploy to Heroku** above.
+3. Configure your Environment Variables and deploy!
 
 ---
 
-## 🤝 Contributing
+## 👨‍💻 Credits & Acknowledgments
 
-Contributions are always welcome! Here's how you can help:
-
-1. 🍴 Fork the repository
-2. 🌿 Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. 💾 Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. 📤 Push to the branch (`git push origin feature/AmazingFeature`)
-5. 🔃 Open a Pull Request
-
----
-
-## 💖 Support
-
-<div align="center">
-
-### Join Our Community
-
-[![Telegram Channel](https://img.shields.io/badge/Telegram-Channel-blue?style=for-the-badge&logo=telegram)](https://t.me/RexBots_Official)
-[![Telegram Group](https://img.shields.io/badge/Telegram-Group-blue?style=for-the-badge&logo=telegram)](https://t.me/rexbotschat)
-
-### ⭐ Star This Repository
-
-If you found this project helpful, please consider giving it a ⭐!
-
-</div>
-
----
-
-## 👨‍💻 Developers
-
-<table>
-<tr>
-<td align="center">
-<a href="https://t.me/V_Sbotmaker">
-<img src="https://via.placeholder.com/100" width="100px;" alt=""/><br>
-<sub><b>@V_Sbotmaker</b></sub>
-</a><br>
-<sub>Lead Developer</sub>
-</td>
-<td align="center">
-<a href="https://t.me/adityaabhinav">
-<img src="https://via.placeholder.com/100" width="100px;" alt=""/><br>
-<sub><b>@adityaabhinav</b></sub>
-</a><br>
-<sub>Core Developer</sub>
-</td>
-<td align="center">
-<a href="https://t.me/akaza7902">
-<img src="https://via.placeholder.com/100" width="100px;" alt=""/><br>
-<sub><b>@akaza7902</b></sub>
-</a><br>
-<sub>Developer</sub>
-</td>
-</tr>
-</table>
-
----
-
-## 📜 Credits
-
-- **Creator**: [RexBots](https://t.me/RexBots_Official)
-- **Original Developer**: [ZANI](https://t.me/about_zani/117)
-- **Library**: [Pyrofork](https://github.com/Mayuri-Chan/pyrofork)
-
----
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+- **Creator & Developer**: [Sudo User](https://t.me/JustThreshold) (`@JustThreshold`)
+- **Founder & Network**: [CosmicBotz](https://t.me/CosmicBotz) (`@CosmicBotz`)
+- **Framework**: Built with [Pyrogram](https://github.com/pyrogram/pyrogram) & [Motor](https://motor.readthedocs.io/)
+- **Repository Link**: [https://github.com/NoOne045-dev/Sequence-bot](https://github.com/NoOne045-dev/Sequence-bot)
 
 ---
 
 <div align="center">
 
-### Made with ❤️ by the RexBots Team
+### Made with ❤️ by [CosmicBotz](https://t.me/CosmicBotz)
 
-**© 2024 Telegram File Sequence Bot. All Rights Reserved.**
-
-[⬆ Back to Top](#-telegram-file-sequence-bot)
+**© 2026 Advanced Telegram File Sequence Bot. All Rights Reserved.**
 
 </div>

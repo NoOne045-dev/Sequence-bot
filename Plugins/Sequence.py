@@ -518,10 +518,14 @@ async def collect_files(client: Client, message: Message):
 
         if user_id not in user_sessions:
             if message.document or message.video or message.audio:
-                await handle_floodwait(
-                    message.reply_text,
-                    "Usᴇ /ssequence ғɪʀsᴛ ᴛʜᴇɴ sᴇɴᴅ ᴛʜᴇ ғɪʟᴇ(s)."
-                )
+                now_ts = time.time()
+                last_warn = pending_notifications.get(f"warn_{user_id}", 0)
+                if now_ts - last_warn >= 5:
+                    pending_notifications[f"warn_{user_id}"] = now_ts
+                    await handle_floodwait(
+                        message.reply_text,
+                        "Usᴇ /ssequence ғɪʀsᴛ ᴛʜᴇɴ sᴇɴᴅ ᴛʜᴇ ғɪʟᴇ(s)."
+                    )
             return
 
         session = user_sessions[user_id]
@@ -565,13 +569,6 @@ async def collect_files(client: Client, message: Message):
                 duplicates_this_time += 1
             else:
                 seen_keys.add(key)
-                # 'cover' (Bot API 8.1+) is Telegram's dedicated video-cover
-                # field, DISTINCT from 'thumb' — a file can have a cover with
-                # no thumb at all. getattr with a default keeps this safe on
-                # pyrofork builds that don't expose it yet. Kept here for
-                # diagnostics/back-compat only — sending no longer branches
-                # on it, since raw_forward_copy preserves the cover
-                # server-side regardless of what this build detects.
                 vid_cover_obj = getattr(message.video, 'cover', None)
                 vid_cover = vid_cover_obj.file_id if vid_cover_obj else None
                 vid_thumb = message.video.thumbs[-1].file_id if message.video.thumbs else None
@@ -605,25 +602,11 @@ async def collect_files(client: Client, message: Message):
                 })
                 added_this_time += 1
 
-        # Track duplicates for this whole session (shown once in the final
-        # completion summary alongside "Time Taken", instead of a separate
-        # message here — fewer messages during collection, and it also
-        # helps keep the file count down when sequencing 100+ files).
         session['total_duplicates'] = session.get('total_duplicates', 0) + duplicates_this_time
 
         if added_this_time == 0:
             return
 
-        # Give a lightweight "bot is alive" signal without sending an actual
-        # message — this is a status ping (shows as "sending file..." /
-        # "typing..." near the input box), not a chat message, so it doesn't
-        # break the quiet batching the debounced notification relies on.
-        #
-        # Throttled to at most once per ~4s per user: Telegram's chat-action
-        # indicator visually lasts ~5s on its own, so firing it on every
-        # single file in a rapid 100+ file batch was pure waste — each call
-        # is its own API request and itself contributes to flood risk with
-        # zero visible benefit between calls that land under a second apart.
         now_ts = time.time()
         if now_ts - session.get('last_chat_action', 0) >= 4:
             session['last_chat_action'] = now_ts
@@ -649,12 +632,19 @@ async def collect_files(client: Client, message: Message):
                 mode_key = await CosmicBotz.get_sequence_mode(user_id) or "All"
                 mode_display = MODES.get(mode_key, MODES["All"])["button"]
 
+                series, non_series = parse_and_sort_files(user_sessions[user_id]['files'], mode_key)
+                missing_report = find_missing_episodes(series + non_series)
+
                 text = (
-                    f"✅ <b>{added_this_time} file(s) added to sequence</b>\n"
+                    f"✅ <b>{current_total} file(s) added to sequence</b>\n"
                     f"Total files: <code>{current_total}</code>\n\n"
-                    f"Current mode: <b>{mode_display}</b>\n"
-                    f"Use <code>/esequence</code> when you're done"
+                    f"Current mode: <b>{mode_display}</b>"
                 )
+
+                if missing_report:
+                    text += f"\n\n⚠️ <b>Missing Items Detected:</b>\n{missing_report}"
+
+                text += "\n\nUse <code>/esequence</code> when you're done"
 
                 quick_kb = InlineKeyboardMarkup([
                     [
@@ -677,6 +667,7 @@ async def collect_files(client: Client, message: Message):
             'timer': asyncio.create_task(send_debounced_notification()),
             'last_count': current_total
         }
+
 
     except Exception as e:
         logger.error(f"Error in collect_files: {e}")
@@ -814,6 +805,7 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
 
         mode_key = await CosmicBotz.get_sequence_mode(user_id) or "All"
         dump_channel = await CosmicBotz.get_dump_channel(user_id)
+        dump_paused = await CosmicBotz.is_dump_paused(user_id)
         episode_sticker = await CosmicBotz.get_episode_sticker(user_id)
         caption_template = await CosmicBotz.get_caption_template(user_id)
 
@@ -821,8 +813,9 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
         total_files = len(series) + len(non_series)
         all_sorted_files = series + non_series
 
-        is_dump_mode = bool(dump_channel)
+        is_dump_mode = bool(dump_channel) and not dump_paused
         target_chat = dump_channel if is_dump_mode else chat_id
+
 
         progress_msg = await notify(
             f"📤 <b>Sending {total_files} files...</b>\n\n{build_progress_bar(0, total_files)}\n0/{total_files}",

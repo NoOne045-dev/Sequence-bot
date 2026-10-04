@@ -75,11 +75,11 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
     data = callback_query.data
 
-    # Settings-panel callbacks (dump channel / episode sticker / caption) and
-    # the quick-action buttons on the file-added notification are handled by
-    # their own dedicated handlers elsewhere.
-    if data.startswith("stg_") or data.startswith("nq_"):
+    # Settings-panel callbacks (stg_), quick notifications (nq_), and leaderboard (lb_)
+    # are handled by dedicated handlers in settings.py and Sequence.py.
+    if data.startswith("stg_") or data.startswith("nq_") or data.startswith("lb_"):
         raise ContinuePropagation
+
 
     try:
         # ─── Sorting Mode Callbacks ───────────────────────────────
@@ -280,6 +280,9 @@ async def settings_callback(client: Client, callback_query: CallbackQuery):
                 await callback_query.message.reply_to_message.delete()
             except Exception:
                 pass
+        else:
+            raise ContinuePropagation
+
 
     except Exception as e:
         logger.error(f"Error in callback handler (data={data!r}): {e}", exc_info=True)

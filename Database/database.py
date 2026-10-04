@@ -134,7 +134,7 @@ class Master:
         try:
             result = await self.user_data.update_one(
                 {"_id": int(user_id)},
-                {"$unset": {"dump_channel": "", "dump_channel_updated_at": ""}}
+                {"$unset": {"dump_channel": "", "dump_channel_updated_at": "", "dump_paused": ""}}
             )
             if result.modified_count > 0:
                 logging.info(f"Dump channel removed for user {user_id}")
@@ -143,6 +143,37 @@ class Master:
         except Exception as e:
             logging.error(f"Error removing dump_channel for {user_id}: {e}")
             return False
+
+    async def is_dump_paused(self, user_id: int) -> bool:
+        """Check if user's dump channel output is currently paused."""
+        try:
+            doc = await self.user_data.find_one({"_id": int(user_id)}, {"dump_paused": 1})
+            return bool(doc and doc.get("dump_paused", False))
+        except Exception as e:
+            logging.error(f"Error checking is_dump_paused for {user_id}: {e}")
+            return False
+
+    async def set_dump_paused(self, user_id: int, paused: bool) -> bool:
+        """Set dump channel paused status."""
+        try:
+            await self.user_data.update_one(
+                {"_id": int(user_id)},
+                {"$set": {"dump_paused": bool(paused)}},
+                upsert=True
+            )
+            logging.info(f"Dump channel pause set for {user_id} → {paused}")
+            return True
+        except Exception as e:
+            logging.error(f"Error setting dump_paused for {user_id}: {e}")
+            return False
+
+    async def toggle_dump_paused(self, user_id: int) -> bool:
+        """Toggle dump channel paused status."""
+        current = await self.is_dump_paused(user_id)
+        new_state = not current
+        await self.set_dump_paused(user_id, new_state)
+        return new_state
+
 
     # ==================== EPISODE STICKER (Per User) ====================
 
