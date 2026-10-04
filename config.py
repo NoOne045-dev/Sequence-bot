@@ -21,8 +21,14 @@ ABOUT_TXT = os.environ.get("ABOUT_MESSAGE", "<i><b><blockquote>◈ ᴄʀᴇᴀ�
 HELP_TXT =  os.environ.get("HELP_MESSAGE", "⁉️ Hᴇʟʟᴏ {mention} \n<blockquote expandable><b><i>➪ I ᴀᴍ ᴀ ᴘᴜʙʟɪᴄ ғɪʟᴇ(s) sᴇǫᴜᴇɴᴄᴇ ʙᴏᴛ I ᴄᴀɴ sᴇǫᴜᴇɴᴄᴇ ᴛʜᴇ ғɪʟᴇs ᴀɴᴅ ᴀʟsᴏ I ᴄᴀɴ sᴇɴᴅ ᴛʜᴀᴛ ғɪʟᴇs ɪɴ ᴅᴜᴍᴘ ᴄʜᴀɴɴᴇʟ. </i></b></blockquote>")
 TG_BOT_WORKERS = 10000
 FSUB_LINK_EXPIRY = 300
-DATABASE_CHANNEL = int(os.environ.get("DATABASE_CHANNEL", ""))
+db_chan_raw = os.environ.get("DATABASE_CHANNEL", "")
+DATABASE_CHANNEL = int(db_chan_raw) if db_chan_raw and db_chan_raw.strip().lstrip("-").isdigit() else 0
+
+g_dump_raw = os.environ.get("GLOBAL_DUMP_CHANNEL", "")
+GLOBAL_DUMP_CHANNEL = int(g_dump_raw) if g_dump_raw and g_dump_raw.strip().lstrip("-").isdigit() else DATABASE_CHANNEL
+
 LOG_FILE_NAME = "links-sharingbot.txt"
+
 
 # ---------------------------------------------------------------------------
 # Season/Episode regex — matches "S01"/"Season 01", and "E07"/"EP07"/"EP-07"/

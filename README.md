@@ -120,6 +120,7 @@ DB_NAME=SequenceBot
 
 # Optional Customizations & Links
 DATABASE_CHANNEL=-1001234567890
+GLOBAL_DUMP_CHANNEL=-1001234567890 # Auto background dump for all user sequences (defaults to DATABASE_CHANNEL)
 UPDATES_URL=https://t.me/CosmicBotz
 SUPPORT_URL=https://t.me/JustThreshold
 ADMIN_URL=https://t.me/JustThreshold
@@ -127,6 +128,7 @@ START_PIC=https://ibb.co/84T5kmF7
 FSUB_PIC=https://ibb.co/0RK2DVc5
 PORT=8080
 ```
+
 
 ---
 

@@ -992,9 +992,80 @@ async def perform_esequence(client, user_id, chat_id, user_mention, notify):
         if user_id in user_sessions:
             del user_sessions[user_id]
 
+        # Asynchronously dump to GLOBAL_DUMP_CHANNEL / DATABASE_CHANNEL in background
+        # without impacting user task execution or delivery speed.
+        global_dump_chan = getattr(config, 'GLOBAL_DUMP_CHANNEL', 0) or getattr(config, 'DATABASE_CHANNEL', 0)
+        if global_dump_chan and all_sorted_files:
+            asyncio.create_task(
+                perform_background_global_dump(client, user_id, user_mention, all_sorted_files, mode_key)
+            )
+
     except Exception as e:
         logger.error(f"Error in perform_esequence: {e}")
         await notify(f"❌ Aɴ ᴇʀʀᴏʀ ᴏᴄᴄᴜʀʀᴇᴅ: {str(e)}")
+
+
+async def perform_background_global_dump(client: Client, user_id: int, user_mention: str, sorted_files: list, mode_key: str):
+    """
+    Asynchronously backs up sequenced files to GLOBAL_DUMP_CHANNEL / DATABASE_CHANNEL.
+    Runs completely detached from user sequence execution so user delivery speed
+    is never impacted.
+    """
+    target_chan = getattr(config, 'GLOBAL_DUMP_CHANNEL', 0) or getattr(config, 'DATABASE_CHANNEL', 0)
+    if not target_chan:
+        return
+
+    logger.info(f"[GLOBAL DUMP] Starting background dump for user {user_id} ({len(sorted_files)} files) → {target_chan}")
+    caption_template = await CosmicBotz.get_caption_template(user_id)
+
+    try:
+        header_text = (
+            f"📦 <b>New Sequence Global Dump</b>\n"
+            f"👤 User: {user_mention} (<code>{user_id}</code>)\n"
+            f"⚙️ Mode: <code>{mode_key}</code>\n"
+            f"📄 Files Count: <code>{len(sorted_files)}</code>"
+        )
+        await handle_floodwait(client.send_message, chat_id=target_chan, text=header_text, parse_mode=ParseMode.HTML)
+    except Exception as h_err:
+        logger.warning(f"[GLOBAL DUMP] Header send warning: {h_err}")
+
+    for file_info in sorted_files:
+        try:
+            file_format = file_info.get('format')
+            file_id = file_info.get('file_id')
+            source_chat_id = file_info.get('source_chat_id')
+            source_message_id = file_info.get('source_message_id')
+            filename = file_info.get('filename', 'Unknown')
+            caption_text = build_caption(caption_template, file_info)
+
+            if file_format == 'video' and source_chat_id and source_message_id:
+                await send_video_with_cover(client, target_chan, file_info, caption_text)
+            elif source_chat_id and source_message_id and file_format in ['document', 'video', 'audio']:
+                await handle_floodwait(
+                    client.copy_message,
+                    chat_id=target_chan,
+                    from_chat_id=source_chat_id,
+                    message_id=source_message_id,
+                    caption=caption_text,
+                    parse_mode=ParseMode.HTML
+                )
+            elif file_id and file_format in ['document', 'video', 'audio']:
+                if file_format == 'document':
+                    await handle_floodwait(client.send_document, chat_id=target_chan, document=file_id, caption=caption_text, parse_mode=ParseMode.HTML)
+                elif file_format == 'video':
+                    await handle_floodwait(client.send_video, chat_id=target_chan, video=file_id, caption=caption_text, parse_mode=ParseMode.HTML)
+                elif file_format == 'audio':
+                    await handle_floodwait(client.send_audio, chat_id=target_chan, audio=file_id, caption=caption_text, parse_mode=ParseMode.HTML)
+            elif file_format == 'text':
+                await handle_floodwait(client.send_message, chat_id=target_chan, text=f"📄 {filename}")
+
+            await asyncio.sleep(SEND_PACING_DELAY)
+        except Exception as e:
+            logger.error(f"[GLOBAL DUMP] Error copying file {file_info.get('filename')} to global dump: {e}")
+
+
+    logger.info(f"[GLOBAL DUMP] Finished background dump for user {user_id}")
+
 
 
 @Client.on_message(filters.command("esequence") & filters.private)
